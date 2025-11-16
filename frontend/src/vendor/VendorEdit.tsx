@@ -1,0 +1,684 @@
+import React, { useEffect, useMemo, useState } from "react";
+import type { VendorOrderLine, VendorOrderHeader, TempZone, MasterItem } from "./apiVendor";
+import { logEvent } from "../auditlog";
+import { getShipment, replaceLines, updateShipmentHeader, createShipment, listItems, listStores, deleteLine, listVendorItems } from "./apiVendor";
+import { listVendors } from "./apiVendor";
+import type { MasterStore, MasterVendor } from "./apiVendor";
+
+
+// ID 正規化（ゼロ埋め固定長）
+const ID = {
+  vendor: (s: string) => String(s ?? "").replace(/\D/g, "").padStart(6, "0"),
+  item:   (s: string) => String(s ?? "").replace(/\D/g, "").padStart(6, "0"),
+  store:  (s: string) => String(s ?? "").replace(/\D/g, "").padStart(4, "0"),
+};
+
+type Props = {
+  headerId: string;
+  onBack: () => void;
+  /** App 側で解決した初期 vendorId（任意） */
+  initialVendorId?: string;
+};
+
+
+export function VendorEdit({ headerId, onBack, initialVendorId }: Props) {
+  const [header, setHeader] = useState<VendorOrderHeader | null>(null);
+  const [lines, setLines] = useState<VendorOrderLine[]>([]);
+  const [headerDraft, setHeaderDraft] = useState<{ deliveryDate: string; vendorId: string; destinationId: string; destinationName: string }>({
+    deliveryDate: "",
+    vendorId: "",
+    destinationId: "",
+    destinationName: "",
+  });
+  const [masterItems, setMasterItems] = useState<MasterItem[]>([]);
+  const [vendorItems, setVendorItems] = useState<MasterItem[]>([]);
+  const [stores, setStores] = useState<MasterStore[]>([]);
+  const [itemModalOpen, setItemModalOpen] = useState(false);
+  const [storeModalOpen, setStoreModalOpen] = useState(false);
+  const [itemFilter, setItemFilter] = useState('');
+  const [storeFilter, setStoreFilter] = useState('');
+  const [vendors, setVendors] = useState<MasterVendor[]>([]);
+  const [vendorFilter, setVendorFilter] = useState('');
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+  const [vendorModalOpen, setVendorModalOpen] = useState(false);
+
+  // 「どの行に反映するか」を覚える
+  const [activeRow, setActiveRow] = useState<number | null>(null);
+
+  // 初期ロード（品目・納品先マスタ）
+  useEffect(() => { (async () => {
+    setMasterItems(await listItems());
+    setStores(await listStores());
+  })(); }, []);
+
+  useEffect(() => {
+  if (!vendorModalOpen) return;
+  if (vendors.length > 0) return;
+  (async () => { setVendors(await listVendors()); })();
+}, [vendorModalOpen, vendors.length]);
+
+
+  // ルータから来ない場合に備え、ハッシュからも拾う保険
+  const headerIdFromHash = new URLSearchParams((location.hash.split("?")[1] || "")).get("id") || "new";
+  const headerIdUse = headerId || headerIdFromHash;
+
+  // 管理者は true にすると vendorId も編集可
+  const IS_MANAGER = false;
+  // 伝票が確定済みなら編集不可（ダブル防御）
+  const isLocked = header?.status === "confirmed";
+// props: headerId は "new" も来る前提
+  // const isNew = headerId === "new";
+  const isNew = headerIdUse === "new";
+
+  // 新規は誰でもベンダー編集可／既存は管理者のみ
+  const canEditVendor = isNew || IS_MANAGER;
+  useEffect(() => {
+    (async () => {
+      if (isNew) {
+        // === 新規作成モード ===
+        const q = new URLSearchParams((location.hash.split("?")[1] || ""));
+        // 1) ハッシュの vendorId
+        let vendorInit = q.get("vendorId") ? ID.vendor(q.get("vendorId")!) : "";
+        // 2) セーフティ：ハッシュに無ければ直前の一覧条件から復元
+        if (!vendorInit) {
+          const vFromSS = sessionStorage.getItem("shipments.vendorId") || "";
+          vendorInit = vFromSS ? ID.vendor(vFromSS) : "";
+        }
+        // 3) それでも空なら props（App 側で解決済み）を使用
+        if (!vendorInit && initialVendorId) {
+          vendorInit = ID.vendor(initialVendorId);
+        }
+        setHeader(null);
+        setHeaderDraft({
+          deliveryDate: new Date().toISOString().slice(0,10),
+          vendorId: vendorInit,
+          destinationId: "",
+          destinationName: "",
+        });
+        setLines([]);
+        return;
+      }
+
+      // === 既存伝票モード ===
+      // const s = await getShipment(headerId);   // ← これが必要
+      const s = await getShipment(headerIdUse);   // ← これが必要
+      setHeader(s.header ?? null);
+      // setHeader(s.header);
+      // setLines(s.lines);
+      setLines(s.lines ?? []);
+      if (s.header) {
+        setHeaderDraft({
+          deliveryDate: s.header.deliveryDate,
+          vendorId: s.header.vendorId,
+          destinationId: s.header.destinationId,
+          destinationName: s.header.destinationName ?? "",
+        });
+      }
+    })();
+  // }, [headerId, isNew]);
+  }, [headerIdUse, isNew]);
+
+// 追加：モーダルが開いたら未取得なら再取得
+  useEffect(() => {
+    (async () => {
+      if (itemModalOpen && masterItems.length === 0) {
+        setMasterItems(await listItems());
+      }
+    })();
+  }, [itemModalOpen]);
+
+    useEffect(() => {
+    const vid = (header?.vendorId || headerDraft.vendorId || '').trim();
+    if (!vid) { setVendorItems([]); return; }
+    (async () => {
+      setVendorItems(await listVendorItems(vid));
+    })();
+  }, [header?.vendorId, headerDraft.vendorId]);
+  
+  useEffect(() => {
+    (async () => {
+      if (storeModalOpen && stores.length === 0) {
+        setStores(await listStores());
+      }
+    })();
+  }, [storeModalOpen]);
+
+  useEffect(() => {
+  if (!vendorModalOpen) return;
+  (async () => { if (vendors.length === 0) setVendors(await listVendors()); })();
+}, [vendorModalOpen]);
+
+  function setQty(i: number, v: number): void {
+    setLines((prev: VendorOrderLine[]) =>
+      prev.map((l: VendorOrderLine, idx: number) => (idx === i ? { ...l, shipQty: v } : l))
+    );
+  }
+
+  const subtotal = useMemo<number>(
+    () => lines.reduce((s: number, l: VendorOrderLine) => s + Number(l.shipQty || 0), 0),
+    [lines]
+  );
+
+  const itemsForPick = vendorItems.length > 0 ? vendorItems : masterItems;
+
+  return (
+    <div className="p-4 space-y-3">
+      <h1 className="text-xl font-bold">
+        ベンダー出荷 - {isNew ? "新規" : "編集"}
+      </h1>  
+      <div className="flex justify-between items-center">
+        <div className="text-sm text-slate-600">
+          納品日: {(header?.deliveryDate ?? headerDraft.deliveryDate) || "-"} /
+          ベンダー: {(header?.vendorId ?? headerDraft.vendorId) || "-"} /
+          納品先: {(header?.destinationId ?? headerDraft.destinationId) || "-"} { (header?.destinationName ?? headerDraft.destinationName) || "" }
+        </div>
+        <button
+          type="button"
+          className="border rounded px-3 py-1"
+          onClick={() => {
+            onBack?.();
+            // URLも必ず戻す（親が未指定でも動く二重化）
+            location.hash = '#/vendor/shipments';
+          }}
+        >
+          一覧へ戻る
+        </button>
+      </div>
+        {/* === ヘッダ編集（確定済みは無効） === */}
+        <div className="p-3 border rounded-lg bg-white">
+          <div className="text-sm text-slate-600 mb-2">ヘッダ編集</div>
+          <div className="flex flex-wrap items-end gap-3">
+            <label>納品日
+              <input
+                type="date"
+                value={headerDraft.deliveryDate}
+                onChange={(e)=> setHeaderDraft(d => ({ ...d, deliveryDate: e.target.value }))}
+                className="border rounded px-2 py-1"
+                disabled={header?.status === "confirmed"}
+              />
+            </label>
+            <label>納品先ID
+              <input
+                value={headerDraft.destinationId}
+                onChange={(e)=> setHeaderDraft(d => ({ ...d, destinationId: e.target.value }))}
+                className="border rounded px-2 py-1 w-28"
+                placeholder="0001"
+                disabled={isLocked}
+              />
+            </label>
+            <div className="flex gap-2">
+              <button
+                type="button"
+                className="border rounded px-2"
+                disabled={isLocked}
+                onClick={() => setStoreModalOpen(true)}
+              >選択</button>
+            </div>
+            <label>納品先名
+              <input
+                value={headerDraft.destinationName}
+                onChange={(e)=> setHeaderDraft(d => ({ ...d, destinationName: e.target.value }))}
+                className="border rounded px-2 py-1 w-44"
+                disabled={header?.status === "confirmed"}
+              />
+            </label>
+            <label>ベンダー
+              <input
+                value={headerDraft.vendorId}
+                onChange={(e)=> setHeaderDraft(d => ({ ...d, vendorId: e.target.value }))}
+                onBlur={(e)=> setHeaderDraft(d => ({ ...d, vendorId: ID.vendor(e.target.value) }))}
+                className="border rounded px-2 py-1 w-28"
+                disabled={isLocked || !canEditVendor}   // ← ここがポイント
+                title={!canEditVendor ? "（既存伝票は管理者のみ編集可能／新規は誰でも可）" : ""}
+              />
+            </label>
+            <div className="flex gap-2">
+              <button
+                type="button"
+                className="border rounded px-2"
+                disabled={isLocked || !canEditVendor}
+                onClick={() => setVendorModalOpen(true)}
+                title={!canEditVendor ? "既存伝票は管理者のみ編集可能／新規は誰でも可" : ""}
+              >
+                選択
+              </button>
+            </div>
+            <button
+              className="border rounded px-3 py-1 ml-auto"
+              disabled={isLocked}
+              onClick={async () => {
+                // 共通バリデーション
+                if (!headerDraft.deliveryDate || !headerDraft.vendorId || !headerDraft.destinationId) {
+                  alert("納品日・ベンダー・納品先IDは必須です。");
+                  return;
+                }
+                // 明細バリデーション：0行禁止・有効行が1つ以上
+                const validLines = lines.filter(l => l.itemId && Number(l.shipQty) > 0);
+                if (validLines.length === 0) {
+                  alert("明細を1行以上入力してください（品目コード & 数量>0）。");
+                  return;
+                }
+
+                if (isNew) {
+                  // isNew ブロック内
+                  const res = await createShipment({
+                    deliveryDate: headerDraft.deliveryDate,
+                    vendorId: ID.vendor(headerDraft.vendorId),
+                    destinationId: ID.store(headerDraft.destinationId),
+                    destinationName: headerDraft.destinationName || undefined,
+                    lines: validLines.map(l => ({
+                      itemId: ID.item(l.itemId),
+                      itemName: l.itemName || undefined,
+                      unit: l.unit || "",
+                      spec: l.spec,
+                      tempZone: l.tempZone,
+                      shipQty: Number(l.shipQty || 0),
+                      note: l.note,
+                      lotNo: l.lotNo,
+                    })),
+                  });
+
+                  // 新規作成成功後（createShipment の直後）
+                  logEvent({
+                    type: "shipment.save",
+                    headerId: res.header.id,
+                    vendorId: res.header.vendorId,
+                    destinationId: res.header.destinationId,
+                    destinationName: res.header.destinationName, 
+                    deliveryDate: res.header.deliveryDate,
+                    memo: "新規作成・明細保存",
+                  });
+
+                  alert(`伝票を作成しました（${res.header.id}）`);
+
+                  // ✅ 新規作成後はそのまま編集画面に遷移
+                  // 新規・既存ともに
+                  location.hash =
+                    `#/vendor/shipments?dateFrom=${encodeURIComponent(headerDraft.deliveryDate)}` +  // 単日扱いなら from=to=納品日
+                    `&dateTo=${encodeURIComponent(headerDraft.deliveryDate)}` +
+                    `&vendorId=${encodeURIComponent(headerDraft.vendorId)}` +
+                    `&destinationId=${encodeURIComponent(headerDraft.destinationId)}` +
+                    `&selectId=${encodeURIComponent(res.header.id)}`;
+
+                  return;
+                } else {
+                  // 既存更新：ヘッダ＋明細の一括保存
+                  // === 既存（更新） ===
+                  if (!header) return;
+
+                  // ヘッダ → 先に更新
+                  await updateShipmentHeader(header.id, {
+                    deliveryDate: headerDraft.deliveryDate,
+                    vendorId: ID.vendor(headerDraft.vendorId),
+                    destinationId: ID.store(headerDraft.destinationId),
+                    destinationName: headerDraft.destinationName || undefined,
+                  });
+
+                  // 明細 → itemId 入力済みのみ保存（数量0も含める／フィルタで qty>0 は絶対にしない）
+                  const toSave = lines
+                    .filter(l => l.itemId) // ★ lineId 条件を外す：新規行も UPSERT で保存
+                    .map(l => ({
+                      ...l,
+                      itemId: ID.item(l.itemId),
+                      shipQty: Number(l.shipQty || 0),
+                    }));
+                  // await saveLines(header.id, toSave);
+                  await replaceLines(header.id, toSave);
+
+
+                  // 既存保存成功後（updateShipmentHeader/saveLines の後）
+                  logEvent({
+                    type: "shipment.save",
+                    headerId: header.id,
+                    vendorId: header.vendorId,
+                    destinationId: header.destinationId,
+                    destinationName: header.destinationName, 
+                    deliveryDate: header.deliveryDate,
+                    memo: "編集保存",
+                  });
+                  
+                  alert("保存しました。");
+                  // 新規・既存ともに
+                  location.hash =
+                    `#/vendor/shipments?dateFrom=${encodeURIComponent(headerDraft.deliveryDate)}` +  // 単日扱いなら from=to=納品日
+                    `&dateTo=${encodeURIComponent(headerDraft.deliveryDate)}` +
+                    `&vendorId=${encodeURIComponent(headerDraft.vendorId)}` +
+                    `&destinationId=${encodeURIComponent(headerDraft.destinationId)}` +
+                    `&selectId=${encodeURIComponent(header.id)}`;
+                  return;
+
+                  // 表示上の header も更新
+                  setHeader(h => h ? ({
+                    ...h,
+                    deliveryDate: headerDraft.deliveryDate,
+                    vendorId: headerDraft.vendorId,
+                    destinationId: headerDraft.destinationId,
+                    destinationName: headerDraft.destinationName || undefined,
+                  }) : h);
+                }
+              }}
+            >
+              保存
+            </button>
+          </div>
+        </div>
+      <div style={{ overflow: "auto", maxHeight: "60vh" }}>
+        <table style={{ width:"100%", borderCollapse:"collapse" }}>
+          <thead>
+            <tr>
+              <th style={{ borderBottom:"1px solid #e2e8f0", padding:"6px 8px" }}>品目</th>
+              <th style={{ borderBottom:"1px solid #e2e8f0", padding:"6px 8px" }}>規格</th>
+              <th style={{ borderBottom:"1px solid #e2e8f0", padding:"6px 8px" }}>温度帯</th>
+              <th style={{ borderBottom:"1px solid #e2e8f0", padding:"6px 8px", textAlign:"right" }}>受注数</th>
+              <th style={{ borderBottom:"1px solid #e2e8f0", padding:"6px 8px", textAlign:"right" }}>出荷数</th>
+              <th style={{ borderBottom:"1px solid #e2e8f0", padding:"6px 8px" }}>単位</th>
+              <th style={{ borderBottom:"1px solid #e2e8f0", padding:"6px 8px" }}>ロット</th>
+              <th style={{ borderBottom:"1px solid #e2e8f0", padding:"6px 8px" }}>操作</th>
+            </tr>
+          </thead>
+          <tbody>
+            {lines.map((l: VendorOrderLine, i: number) => (
+              <tr key={l.lineId}>
+                <td style={{ borderBottom:"1px solid #e2e8f0", padding:"6px 8px" }}>
+                <input
+                  list="master-items"
+                  value={l.itemId}
+                  onFocus={() => setActiveRow(i)}
+                  onChange={(e) => {
+                    const v = e.target.value.trim();
+                    const m = itemsForPick.find(x => x.id === v);
+                    setLines(prev => prev.map((x, idx) => {
+                      if (idx !== i) return x;
+                      return m ? {
+                        ...x,
+                        itemId: m.id,
+                        itemName: m.name ?? "",
+                        unit: m.unit ?? "",
+                        spec: m.spec ?? "",
+                        tempZone: (m.tempZone ?? undefined),
+                      } : { ...x, itemId: v };
+                    }));
+                  }}
+                  className="border rounded px-2 py-1 w-36"
+                  placeholder="品目コード（先頭入力で候補）"
+                  disabled={isLocked}
+                />
+                <button
+                  type="button"
+                  className="border rounded px-2 ml-2 h-8"
+                  disabled={isLocked}
+                  onClick={() => { setActiveRow(i); setItemModalOpen(true); }}
+                >選択</button>
+                <div className="text-xs text-slate-500 mt-1">{l.itemName || ""}</div>
+                </td>
+                {/* 品目コード（既存のままでOK） */}
+                {/* 規格 */}
+                <td style={{ borderBottom:"1px solid #e2e8f0", padding:"6px 8px" }}>
+                  <input
+                    value={l.spec || ""} disabled={isLocked}
+                    onChange={(e)=> setLines(prev => prev.map((x,idx)=> idx===i ? { ...x, spec: e.target.value } : x))}
+                    className="border rounded px-2 py-1 w-28"
+                  />
+                </td>
+                {/* 温度帯 */}
+                <td style={{ borderBottom:"1px solid #e2e8f0", padding:"6px 8px" }}>
+                  <select
+                    value={l.tempZone ?? ""} disabled={isLocked}
+                    onChange={(e)=> setLines(prev => prev.map((x,idx)=> idx===i ? { ...x, tempZone: (e.target.value || undefined) as TempZone | undefined } : x))}
+                    className="border rounded px-2 py-1 w-24"
+                  >
+                    <option value="">未設定</option>
+                    <option value="ambient">常温</option>
+                    <option value="chilled">チルド</option>
+                    <option value="frozen">冷凍</option>
+                  </select>
+                </td>
+                {/* 受注数 */}
+                <td style={{ borderBottom:"1px solid #e2e8f0", padding:"6px 8px", textAlign:"right" }}>{l.orderedQty}</td>
+                {/* 出荷数 */}
+                <td style={{ borderBottom:"1px solid #e2e8f0", padding:"6px 8px", textAlign:"right" }}>
+                  <input
+                    type="number"
+                    value={l.shipQty}
+                    onChange={(e: React.ChangeEvent<HTMLInputElement>) => setQty(i, Number(e.target.value))}
+                    onKeyDown={(e: React.KeyboardEvent<HTMLInputElement>) => {
+                      if (e.key === "Enter") {
+                        const nx = document.querySelector<HTMLInputElement>(`input[data-idx='${i+1}']`);
+                        nx?.focus();
+                      }
+                    }}
+                    data-idx={i}
+                    className="border rounded px-2 py-1 w-24"
+                    style={{ textAlign:"right" }}
+                    disabled={isLocked}
+                  />
+                </td>
+                {/* 単位 */}
+                <td style={{ borderBottom:"1px solid #e2e8f0", padding:"6px 8px" }}>
+                  <input
+                    value={l.unit || ""} disabled={isLocked}
+                    onChange={(e)=> setLines(prev => prev.map((x,idx)=> idx===i ? { ...x, unit: e.target.value } : x))}
+                    className="border rounded px-2 py-1 w-20"
+                  />
+                </td>
+                {/* ロット */}
+                <td style={{ borderBottom:"1px solid #e2e8f0", padding:"6px 8px" }}>
+                  <input
+                    value={l.lotNo || ""} disabled={isLocked}
+                    onChange={(e: React.ChangeEvent<HTMLInputElement>) =>
+                      setLines((prev: VendorOrderLine[]) =>
+                        prev.map((x: VendorOrderLine, idx: number) => (idx === i ? { ...x, lotNo: e.target.value } : x))
+                      )
+                    }
+                    className="border rounded px-2 py-1 w-28"
+                  />
+                </td>
+                <td style={{ borderBottom:"1px solid #e2e8f0", padding:"6px 8px" }}>
+                  <button
+                    className="border rounded px-2 py-1 text-red-600"
+                    disabled={isLocked}
+                    onClick={async () => {
+                      // 既存行（DBに存在する＝header.id && l.itemId が非空）の場合はサーバも削除
+                      if (header?.id && l.itemId) {
+                        await deleteLine(header.id, ID.item(l.itemId));
+                      }
+                      // 画面から行を除去
+                      setLines(prev => prev.filter((_, idx) => idx !== i));
+                    }}
+                  >
+                    削除
+                  </button>
+                </td>
+              </tr>
+            ))}
+            {lines.length === 0 && (
+              <tr><td colSpan={7} style={{ color:"#64748b", padding:"8px" }}>明細がありません。</td></tr>
+            )}
+          </tbody>
+        </table> 
+      </div>
+      <datalist id="master-items">
+        {/* {masterItems.map(m => ( */}
+        {itemsForPick.map(m => (
+          <option key={m.id} value={m.id}>{m.name}</option>
+        ))}
+      </datalist>
+
+      <div className="mt-2">
+        <button
+          className="border rounded px-3 py-1"
+          onClick={() =>
+            setLines(prev => {
+              // 既存の lineId を走査して最大番号を取得
+              const maxN = prev.reduce((m, x) => {
+                const n = parseInt(String(x.lineId).replace(/^VOL-/, ""), 10);
+                return isNaN(n) ? m : Math.max(m, n);
+              }, 0);
+              const nextId = `VOL-${String(maxN + 1).padStart(3, "0")}`;
+
+              // 新しい行を追加
+              return [
+                ...prev,
+                {
+                  lineId: nextId,
+                  // headerId,
+                  headerId: headerIdUse,
+                  itemId: "",
+                  itemName: "",
+                  unit: "",
+                  orderedQty: 0,
+                  shipQty: 0,
+                  spec: "",
+                  tempZone: undefined,
+                  note: "",
+                  lotNo: "",
+                },
+              ];
+            })
+          }
+        >
+          ＋ 行を追加
+        </button>
+      </div>
+      <div className="flex justify-end items-center gap-6">
+        <div>合計出荷数: <b>{subtotal}</b></div>
+      </div>
+      {storeModalOpen && (
+        <div className="fixed inset-0 bg-black/30 flex items-center justify-center z-50" onClick={()=>setStoreModalOpen(false)}>
+          <div className="bg-white rounded-xl p-3 w-[520px] max-h-[70vh] overflow-auto" onClick={e=>e.stopPropagation()}>
+            <div className="flex items-center gap-2 mb-2">
+              <b>納品先を選択</b>
+              <input className="border rounded px-2 py-1 ml-auto" placeholder="絞り込み" value={storeFilter} onChange={e=>setStoreFilter(e.target.value)} />
+            </div>
+            <table className="w-full text-sm">
+              <tbody>
+                {stores.length === 0 && (
+                      <tr><td className="px-2 py-2 text-slate-500" colSpan={2}>マスタ0件（/master/stores）</td></tr>
+                    )}    
+                {stores
+                  .filter(s => (s.id + (s.name||'')).includes(storeFilter))
+                  .map(s => (
+                    <tr key={s.id} className="cursor-pointer hover:bg-slate-50"
+                        onClick={() => {
+                          setHeaderDraft(d => ({ ...d, destinationId: s.id, destinationName: s.name ?? '' }));
+                          setStoreModalOpen(false);
+                        }}>
+                      <td className="border-b px-2 py-1 font-mono">{s.id}</td>
+                      <td className="border-b px-2 py-1">{s.name}</td>
+                    </tr>
+                ))}
+              </tbody>
+            </table>
+            <div className="text-right mt-2">
+              <button className="border rounded px-3 py-1" onClick={()=>setStoreModalOpen(false)}>閉じる</button>
+            </div>
+          </div>
+        </div>
+      )}
+      {itemModalOpen && (
+        <div className="fixed inset-0 bg-black/30 flex items-center justify-center z-50" onClick={()=>setItemModalOpen(false)}>
+          <div className="bg-white rounded-xl p-3 w-[720px] max-h-[70vh] overflow-auto" onClick={e=>e.stopPropagation()}>
+            <div className="flex items-center gap-2 mb-2">
+              <b>品目を選択</b>
+              <input className="border rounded px-2 py-1 ml-auto" placeholder="コード/名称で絞り込み" value={itemFilter} onChange={e=>setItemFilter(e.target.value)} />
+            </div>
+            <table className="w-full text-sm">
+              <thead>
+                <tr>
+                  <th className="text-left px-2 py-1">コード</th>
+                  <th className="text-left px-2 py-1">名称</th>
+                  <th className="text-left px-2 py-1">規格</th>
+                  <th className="text-left px-2 py-1">単位</th>
+                  <th className="text-left px-2 py-1">温度帯</th>
+                </tr>
+              </thead>
+              <tbody>
+                {/* {masterItems.length === 0 && ( */}
+                {(itemsForPick.length === 0) && (
+                  <tr><td className="px-2 py-2 text-slate-500" colSpan={5}>マスタ0件（/master/items）</td></tr>
+                )}
+                {/* {masterItems */}
+                {itemsForPick
+                  .filter(m => (m.id + (m.name||'') + (m.spec||'')).includes(itemFilter))
+                  .map(m => (
+                    <tr key={m.id} className="cursor-pointer hover:bg-slate-50"
+                        onClick={() => {
+                          setLines(prev => {
+                            if (activeRow == null || activeRow < 0 || activeRow >= prev.length) return prev;
+                            const next = [...prev];
+                            next[activeRow] = {
+                              ...next[activeRow],
+                              itemId: m.id,
+                              itemName: m.name ?? '',
+                              unit: m.unit ?? '',
+                              spec: m.spec ?? '',
+                              tempZone: (m.tempZone ?? undefined),
+                            };
+                            return next;
+                          });
+                          setItemModalOpen(false);
+                        }}>
+                      <td className="border-b px-2 py-1 font-mono">{m.id}</td>
+                      <td className="border-b px-2 py-1">{m.name}</td>
+                      <td className="border-b px-2 py-1">{m.spec ?? ''}</td>
+                      <td className="border-b px-2 py-1">{m.unit ?? ''}</td>
+                      <td className="border-b px-2 py-1">{m.tempZone ?? ''}</td>
+                    </tr>
+                ))}
+              </tbody>
+            </table>
+            <div className="text-right mt-2">
+              <button className="border rounded px-3 py-1" onClick={()=>setItemModalOpen(false)}>閉じる</button>
+            </div>
+          </div>
+        </div>
+      )}
+      {vendorModalOpen && (
+        <div
+          className="fixed inset-0 bg-black/30 flex items-center justify-center z-50"
+          onClick={() => setVendorModalOpen(false)}
+        >
+          <div
+            className="bg-white rounded-xl p-3 w-[520px] max-h-[70vh] overflow-auto"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center gap-2 mb-2">
+              <b>ベンダーを選択</b>
+              <input
+                className="border rounded px-2 py-1 ml-auto"
+                placeholder="ID/名称で絞り込み"
+                value={vendorFilter}
+                onChange={(e) => setVendorFilter(e.target.value)}
+              />
+            </div>
+
+            <table className="w-full text-sm">
+              <tbody>
+                {vendors
+                  .filter(v => (v.id + (v.name || "")).includes(vendorFilter))
+                  .map(v => (
+                    <tr
+                      key={v.id}
+                      className="cursor-pointer hover:bg-slate-50"
+                      onClick={() => {
+                        setHeaderDraft(d => ({ ...d, vendorId: v.id }));
+                        setVendorModalOpen(false);
+                      }}
+                    >
+                      <td className="border-b px-2 py-1 font-mono">{v.id}</td>
+                      <td className="border-b px-2 py-1">{v.name}</td>
+                    </tr>
+                  ))}
+              </tbody>
+            </table>
+
+            <div className="text-right mt-2">
+              <button className="border rounded px-3 py-1" onClick={() => setVendorModalOpen(false)}>閉じる</button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );  
+}
+

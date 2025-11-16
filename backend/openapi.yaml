@@ -1,0 +1,186 @@
+openapi: 3.0.3
+info:
+  title: Ordering API (minimal)
+  version: 0.1.0
+  license:
+    name: Proprietary
+servers:
+  - url: http://localhost:8080
+
+# 既定で Bearer 認証を要求（/health などは個別に security: [] で外す）
+security:
+  - bearerAuth: []
+
+paths:
+  /health:
+    get:
+      operationId: getHealth
+      summary: Health check
+      security: []   # ← 匿名でOK
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+        '400':
+          description: Bad request
+
+  /pricing/resolve:
+    get:
+      operationId: resolvePricing
+      summary: Resolve unit price by vendor/item/(store)/date
+      parameters:
+        - in: query
+          name: vendorId
+          required: true
+          schema:
+            type: string
+        - in: query
+          name: itemId
+          required: true
+          schema:
+            type: string
+        - in: query
+          name: storeId
+          required: false
+          schema:
+            type: string
+        - in: query
+          name: date
+          required: true
+          schema:
+            type: string
+            format: date
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PricingResolveResponse'
+        '400':
+          description: Bad request
+
+  /ordering/rules:
+    get:
+      operationId: resolveOrderingRules
+      summary: Resolve orderable/cutoff/lead time by vendor/store/date
+      parameters:
+        - in: query
+          name: vendorId
+          required: true
+          schema:
+            type: string
+        - in: query
+          name: storeId
+          required: true
+          schema:
+            type: string
+        - in: query
+          name: date
+          required: true
+          schema:
+            type: string
+            format: date
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OrderingRulesResponse'
+        '400':
+          description: Bad request
+  /stores:
+    get:
+      summary: List stores
+      operationId: listStores
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  stores:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        id: { type: string }
+                        name: { type: string }
+  /vendors:
+    get:
+      summary: List vendors
+      operationId: listVendors
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  vendors:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        id: { type: string }
+                        name: { type: string }
+                        cutoffHHmm: { type: string }
+                        leadTimeDays: { type: integer }
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+
+  schemas:
+    TempZone:
+      type: string
+      enum: [ambient, chilled, frozen]
+
+    PricingResolveResponse:
+      type: object
+      properties:
+        unitPrice:
+          type: number
+          format: float
+          nullable: true
+        validFrom:
+          type: string
+          format: date
+          nullable: true
+        validTo:
+          type: string
+          format: date
+          nullable: true
+        source:
+          type: string
+          enum: [store, vendor, none]
+        # TempZone を参照して unused 警告を消す（不要なら消しても動作には影響なし）
+        tempZone:
+          $ref: '#/components/schemas/TempZone'
+
+    OrderingRulesResponse:
+      type: object
+      properties:
+        orderable:
+          type: boolean
+        cutoffHHmm:
+          type: string
+        leadTimeDays:
+          type: integer
+          minimum: 0
+        source:
+          type: string
+          enum: [calendar, override, vendor]
+

@@ -1,0 +1,7 @@
+# Node.js
+node_modules/
+
+# データベースファイル
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal
