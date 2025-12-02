@@ -1,0 +1,5 @@
+-- database: ./data.sqlite
+
+UPDATE store_vendor_overrides set orderable_sat_override=1 WHERE store_id='0002' AND vendor_id='100011';
+
+UPDATE store_vendor_overrides set orderable_sat_override=1 WHERE store_id='0002' AND vendor_id='600502';

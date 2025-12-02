@@ -1,220 +1,300 @@
 // src/inspection/inspectionApi.ts
+// 検品API（サーバー連携版）
+
 import type { VendorOrderHeader, VendorOrderLine } from "../vendor/apiVendor";
 
-// ====== 型 ======
+// ===== 型定義 =====
+
 export type OwnerType = "STORE" | "DC";
 
+export type InspectionStatus = "open" | "completed" | "audited";
+
 export interface InspectionHeader {
-  id: string;                   // INSP-<yyyymmdd>-<vendor>-<dest>-<seq>
-  sourceShipmentId: string;     // VendorOrderHeader.id
+  id: number;
+  shipmentId: number;
+  ownerId: string;
+  status: InspectionStatus;
+  createdAt: string;
+  updatedAt: string;
   vendorId: string;
-  deliveryDate: string;
   destinationId: string;
-  destinationName?: string;
-  ownerType: OwnerType;         // STORE or DC（= 納品先の種別）
-  ownerId: string;              // = destinationId
-  status: "open" | "confirmed"; // 検収前/検収済
+  destinationName: string;
+  deliveryDate: string; // YYYY-MM-DD
+}
+
+export interface InspectionLine {
+  id: number;
+  inspectionId: number;
+  itemId: string;
+  shipQty: number;
+  inspectedQty: number;
+  diffQty: number;
+  unit: string | null;
+  spec: string | null;
+  tempZone: string | null;
+  lotNo: string | null;
+  note: string | null;
+  itemName?: string | null;
   createdAt: string;
   updatedAt: string;
 }
-export interface InspectionLine {
-  lineId: string;
-  headerId: string;             // InspectionHeader.id
-  itemId: string;
-  itemName: string;
-  unit: string;
-  shipQty: number;              // 出荷数（参照）
-  inspectQty: number;           // 検品数（編集）
-  lotNo?: string;
-  note?: string;
+
+export interface GenerateFromShipmentsResult {
+  ok: boolean;
+  createdHeaders: number;
+  createdLines: number;
+  processedShipments: number;
+  skippedShipments: number;
 }
 
-// ====== localStorage キー ======
-const IH = (id: string) => `INSH:${id}`;
-const IL = (hid: string) => `INSL:${hid}`;
+// ===== 検品検索（店舗/DC 共通・暫定版） =====
 
-// ====== 検索 ======
-export async function searchInspections(params: {
-  from?: string; to?: string;           // YYYY-MM-DD
+export interface SearchInspectionsParams {
+  from?: string;
+  to?: string;
   vendorId?: string;
+  ownerType: OwnerType;   // いまは未使用だが将来 DC 用で使う想定
+  ownerId: string;
+}
+
+/**
+ * 検品一覧検索API（暫定実装）
+ *
+ * 現状のサーバー側は ownerId 単位の一覧のみなので、
+ * from / to / vendorId は無視して ownerId だけで検索します。
+ * フィルタが必要になったらサーバー側の /inspections を拡張します。
+ */
+// export async function searchInspections(
+//   params: SearchInspectionsParams
+// ): Promise<{ headers: InspectionHeader[]; lines: InspectionLine[] }> {
+//   // いったん ownerId だけ渡して既存APIを呼ぶ
+//   // return fetchInspectionsByOwner({ ownerId: params.ownerId });
+//     return fetchInspectionsByOwner({
+//     ownerId: params.ownerId,
+//     from: params.from,
+//     to: params.to,
+//     vendorId: params.vendorId,
+//   });
+// }
+export async function searchInspections(
+  params: SearchInspectionsParams
+): Promise<{ headers: InspectionHeader[]; lines: InspectionLine[] }> {
+  return fetchInspections({
+    ownerType: params.ownerType,
+    ownerId: params.ownerId,
+    from: params.from,
+    to: params.to,
+    vendorId: params.vendorId,
+  });
+}
+
+// ===== 共通ヘルパー =====
+
+async function getJson<T>(input: RequestInfo, init?: RequestInit): Promise<T> {
+  const res = await fetch(input, {
+    headers: { "Content-Type": "application/json", ...(init?.headers ?? {}) },
+    ...init,
+  });
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    throw new Error(`HTTP ${res.status}: ${text || res.statusText}`);
+  }
+  return (await res.json()) as T;
+}
+
+async function fetchInspections(params: {
   ownerType: OwnerType;
   ownerId: string;
-}) : Promise<{ headers: InspectionHeader[], lines: InspectionLine[] }> {
-  const out: { headers: InspectionHeader[], lines: InspectionLine[] } = { headers: [], lines: [] };
-  for (let i = 0; i < localStorage.length; i++) {
-    const k = localStorage.key(i)!;
-    if (!k.startsWith("INSH:")) continue;
-    const h = JSON.parse(localStorage.getItem(k)!) as InspectionHeader;
-    if (h.ownerType !== params.ownerType || h.ownerId !== params.ownerId) continue;
-    if (params.vendorId && h.vendorId !== params.vendorId) continue;
-    if (params.from && h.deliveryDate < params.from) continue;
-    if (params.to && h.deliveryDate > params.to) continue;
-    out.headers.push(h);
-    const lr = localStorage.getItem(IL(h.id));
-    if (lr) out.lines.push(...(JSON.parse(lr) as InspectionLine[]));
-  }
-  return out;
+  from?: string;
+  to?: string;
+  vendorId?: string;
+}): Promise<{ headers: InspectionHeader[]; lines: InspectionLine[] }> {
+  const usp = new URLSearchParams();
+
+  // ★ DC/STORE をサーバーに伝える
+  usp.set("ownerType", params.ownerType);
+
+  if (params.ownerId) usp.set("ownerId", params.ownerId);
+  if (params.from) usp.set("from", params.from);
+  if (params.to) usp.set("to", params.to);
+  if (params.vendorId) usp.set("vendorId", params.vendorId);
+
+  const data = await getJson<{
+    headers?: InspectionHeader[];
+    lines?: InspectionLine[];
+  }>(`/inspections?${usp.toString()}`);
+
+  return {
+    headers: data.headers ?? [],
+    lines: data.lines ?? [],
+  };
 }
 
-// ====== 1件取得 ======
-export async function getInspection(headerId: string): Promise<{ header: InspectionHeader | null, lines: InspectionLine[] }> {
-  const raw = localStorage.getItem(IH(headerId));
-  if (!raw) return { header: null, lines: [] };
-  const header = JSON.parse(raw) as InspectionHeader;
-  const lr = localStorage.getItem(IL(headerId));
-  const lines = lr ? (JSON.parse(lr) as InspectionLine[]) : [];
-  return { header, lines };
+// ===== 検品一覧取得（店舗側・将来の検品画面用） =====
+// export async function fetchInspectionsByOwner(params: {
+//   ownerId: string;           // 店舗ID（"0001" など）
+//   from?: string;
+//   to?: string;
+//   vendorId?: string;
+// }): Promise<{ headers: InspectionHeader[]; lines: InspectionLine[] }> {
+//    const usp = new URLSearchParams();
+//   // if (params.ownerId) usp.set("ownerId", params.ownerId);
+//   if (params.ownerId) usp.set("ownerId", params.ownerId);
+//   if (params.from) usp.set("from", params.from);
+//   if (params.to) usp.set("to", params.to);
+//   if (params.vendorId) usp.set("vendorId", params.vendorId);
+
+//   const data = await getJson<{
+//     ok?: boolean;
+//     headers?: InspectionHeader[];
+//     lines?: InspectionLine[];
+//   }>(`/inspections?${usp.toString()}`);
+
+//   return {
+//     headers: data.headers ?? [],
+//     lines: data.lines ?? [],
+//   };
+// }
+export async function fetchInspectionsByOwner(params: {
+  ownerId: string;           // 店舗ID（"0001" など）
+  from?: string;
+  to?: string;
+  vendorId?: string;
+}): Promise<{ headers: InspectionHeader[]; lines: InspectionLine[] }> {
+  return fetchInspections({
+    ownerType: "STORE",
+    ownerId: params.ownerId,
+    from: params.from,
+    to: params.to,
+    vendorId: params.vendorId,
+  });
 }
 
-// ====== 行保存 ======
-export async function saveInspectionLines(
-  headerId: string,
-  patches: Array<Pick<InspectionLine, "lineId" | "inspectQty" | "lotNo" | "note">>
-): Promise<void> {
-  const key = IL(headerId);
-  const lr = localStorage.getItem(key);
-  if (!lr) return;
-  const arr = JSON.parse(lr) as InspectionLine[];
-  const map = new Map(arr.map(x => [x.lineId, x]));
-  for (const p of patches) {
-    const cur = map.get(p.lineId);
-    if (cur) {
-      cur.inspectQty = Number(p.inspectQty ?? 0);
-      if (p.lotNo !== undefined) cur.lotNo = p.lotNo;
-      if (p.note !== undefined) cur.note = p.note;
-    }
-  }
-  localStorage.setItem(key, JSON.stringify(Array.from(map.values())));
-}
 
-// ====== 一括検収（確定） ======
-export async function confirmInspections(headerIds: string[]): Promise<{ confirmedAt: string }> {
-  const now = new Date().toISOString();
-  for (const hid of headerIds) {
-    const hk = IH(hid);
-    const raw = localStorage.getItem(hk);
-    if (!raw) continue;
-    const h = JSON.parse(raw) as InspectionHeader;
-    h.status = "confirmed";
-    h.updatedAt = now;
-    localStorage.setItem(hk, JSON.stringify(h));
-  }
-  return { confirmedAt: now };
-}
+// ===== 出荷→検品の自動生成（ベンダー確定時） =====
 
-// ====== 出荷→検品の自動生成（ベンダー確定時） ======
 /**
- * VendorShipments.handleConfirm から呼ぶ。
- * - 伝票ごとに InspectionHeader が未存在なら作成
- * - InspectionLine を出荷明細から生成（inspectQty 初期値 = shipQty）
- * - ownerType/ownerId は納品先の種別/ID（STORE/DC）
+ * VendorShipments.handleConfirm から呼ばれる。
+ *
+ * 役割:
+ * - 確定された出荷ヘッダを店舗ごとにまとめる
+ * - 店舗ごとに /inspections/generate-from-shipments を呼び出して
+ *   inspections / inspection_lines をサーバー側に生成させる
+ *
+ * 備考:
+ * - lines 引数は将来の拡張用。現在の実装ではサーバーが shipment_lines を参照するため未使用。
  */
 export async function ensureFromShipments(
   headers: VendorOrderHeader[],
-  lines: VendorOrderLine[],
+  _lines: VendorOrderLine[],
   targetHeaderIds: string[]
 ): Promise<void> {
+  if (!targetHeaderIds.length) return;
+
+  // id → header のマップ
   const hMap = new Map(headers.map(h => [h.id, h]));
-  const byH: Map<string, VendorOrderLine[]> = new Map();
-  for (const ln of lines) {
-    if (!targetHeaderIds.includes(ln.headerId)) continue;
-    if (!byH.has(ln.headerId)) byH.set(ln.headerId, []);
-    byH.get(ln.headerId)!.push(ln);
+
+  // 納品先（店舗）ごとにヘッダIDをまとめる
+  const byOwner = new Map<string, number[]>(); // ownerId(storeId) -> shipment ids
+
+  for (const idStr of targetHeaderIds) {
+    const h = hMap.get(idStr);
+    if (!h) continue;
+
+    const ownerIdRaw = h.destinationId;
+    if (!ownerIdRaw) continue;
+
+    const ownerId = String(ownerIdRaw).padStart(4, "0"); // STORE ID 正規化
+    const shipmentId = Number(h.id);
+    if (!Number.isFinite(shipmentId)) continue;
+
+    if (!byOwner.has(ownerId)) byOwner.set(ownerId, []);
+    byOwner.get(ownerId)!.push(shipmentId);
   }
 
-  for (const hid of targetHeaderIds) {
-    const sh = hMap.get(hid);
-    if (!sh) continue;
+  const tasks: Promise<GenerateFromShipmentsResult>[] = [];
 
-    // 既に検品ヘッダがあればスキップ
-    const exist = findInspectionIdBySource(hid);
-    const inspectionId = exist ?? buildInspectionId(sh);
-    if (!exist) {
-      const ih: InspectionHeader = {
-        id: inspectionId,
-        sourceShipmentId: sh.id,
-        vendorId: sh.vendorId,
-        deliveryDate: sh.deliveryDate,
-        destinationId: sh.destinationId,
-        destinationName: sh.destinationName,
-        ownerType: sh.destinationType as OwnerType, // STORE or DC
-        ownerId: sh.destinationId,
-        status: "open",
-        createdAt: new Date().toISOString(),
-        updatedAt: new Date().toISOString(),
-      };
-      localStorage.setItem(IH(inspectionId), JSON.stringify(ih));
-    }
+  for (const [ownerId, shipmentHeaderIds] of byOwner.entries()) {
+    if (!shipmentHeaderIds.length) continue;
 
-    // 行を投入（未存在なら）
-    const linesKey = IL(inspectionId);
-    const cur = localStorage.getItem(linesKey);
-    if (!cur) {
-      const src = byH.get(hid) ?? [];
-      const insLines: InspectionLine[] = src.map((l, idx) => ({
-        lineId: `INSL-${String(idx + 1).padStart(3, "0")}`,
-        headerId: inspectionId,
-        itemId: l.itemId,
-        itemName: l.itemName,
-        unit: l.unit,
-        shipQty: Number(l.shipQty ?? l.orderedQty ?? 0),
-        inspectQty: Number(l.shipQty ?? l.orderedQty ?? 0),
-        lotNo: l.lotNo,
-        note: "",
-      }));
-      localStorage.setItem(linesKey, JSON.stringify(insLines));
-    }
+    const payload = {
+      ownerType: "STORE" as OwnerType,
+      ownerId,
+      shipmentHeaderIds,
+    };
+
+    tasks.push(
+      getJson<GenerateFromShipmentsResult>("/inspections/generate-from-shipments", {
+        method: "POST",
+        body: JSON.stringify(payload),
+      })
+    );
   }
+
+  // 失敗があれば例外を投げる（VendorShipments 側で try/catch 済み）
+  await Promise.all(tasks);
 }
 
-// ====== 内部 util ======
-function buildInspectionId(sh: VendorOrderHeader): string {
-  // 伝票単位で一意：INSP-<date>-<vendor>-<dest>
-  return `INSP-${sh.deliveryDate}-${sh.vendorId}-${sh.destinationId}`;
-}
-function findInspectionIdBySource(sourceShipmentId: string): string | null {
-  for (let i = 0; i < localStorage.length; i++) {
-    const k = localStorage.key(i)!;
-    if (!k.startsWith("INSH:")) continue;
-    const h = JSON.parse(localStorage.getItem(k)!) as InspectionHeader;
-    if (h.sourceShipmentId === sourceShipmentId) return h.id;
+// ===== 検品 確定API =====
+
+/**
+ * 検品を「completed」にする。
+ * ids は number でも string でもOK。
+ */
+export async function confirmInspections(
+  ids: (string | number)[]
+): Promise<void> {
+  // 数値化 & 不正値除外
+  const bodyIds = ids
+    .map((x) => Number(x))
+    .filter((n) => Number.isFinite(n));
+
+  if (bodyIds.length === 0) {
+    return;
   }
-  return null;
+
+  await getJson<{ updated: number }>("/inspections/confirm", {
+    method: "POST",
+    body: JSON.stringify({ ids: bodyIds }),
+  });
 }
 
-// ベンダー向け検索（owner 無しで vendorId と期間で絞る）
-export async function searchInspectionsByVendor(params: {
-  from?: string; to?: string;       // YYYY-MM-DD
-  vendorId: string;                 // 必須
-  destinationId?: string;           // 任意（店舗/DCを絞る）
-}): Promise<{ headers: InspectionHeader[], lines: InspectionLine[] }> {
-  const out: { headers: InspectionHeader[], lines: InspectionLine[] } = { headers: [], lines: [] };
-  for (let i = 0; i < localStorage.length; i++) {
-    const k = localStorage.key(i)!;
-    if (!k.startsWith("INSH:")) continue;
-    const h = JSON.parse(localStorage.getItem(k)!) as InspectionHeader;
-    if (h.vendorId !== params.vendorId) continue;
-    if (params.destinationId && h.destinationId !== params.destinationId) continue;
-    if (params.from && h.deliveryDate < params.from) continue;
-    if (params.to && h.deliveryDate > params.to) continue;
-    out.headers.push(h);
-    const lr = localStorage.getItem(IL(h.id));
-    if (lr) out.lines.push(...(JSON.parse(lr) as InspectionLine[]));
+
+// ===== 単票取得 =====
+
+export async function getInspection(inspectionId: string | number): Promise<{
+  header: InspectionHeader;
+  lines: (InspectionLine & { itemName?: string })[];
+}> {
+  const idStr = String(inspectionId);
+  const data = await getJson<{
+    ok?: boolean;
+    header: InspectionHeader;
+    lines: (InspectionLine & { itemName?: string })[];
+  }>(`/inspections/${encodeURIComponent(idStr)}`);
+
+  if (!data.ok) {
+    throw new Error("failed to load inspection");
   }
-  return out;
+
+  return {
+    header: data.header,
+    lines: data.lines ?? [],
+  };
 }
 
-// 検収確定の取り消し（confirmed → open）
-export async function unconfirmInspections(headerIds: string[]): Promise<{ unconfirmedAt: string }> {
-  const now = new Date().toISOString();
-  for (const hid of headerIds) {
-    const hk = IH(hid);
-    const raw = localStorage.getItem(hk);
-    if (!raw) continue;
-    const h = JSON.parse(raw) as InspectionHeader;
-    h.status = "open";
-    h.updatedAt = now;
-    localStorage.setItem(hk, JSON.stringify(h));
-  }
-  return { unconfirmedAt: now };
+// ===== 明細保存 =====
+
+export async function saveInspectionLines(
+  inspectionId: string | number,
+  lines: (Pick<InspectionLine, "id" | "inspectedQty" | "lotNo" | "note">)[]
+): Promise<void> {
+  const idStr = String(inspectionId);
+
+  await getJson<{ ok: boolean }>(`/inspections/${encodeURIComponent(idStr)}/lines`, {
+    method: "PATCH",
+    body: JSON.stringify({
+      lines,
+    }),
+  });
 }

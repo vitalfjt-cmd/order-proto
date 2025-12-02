@@ -1,6 +1,7 @@
 // --- API raw types (from backend v_* views) -----------------
 export type ApiShipmentHeader = {
   id: number;
+  order_date: string;
   delivery_date: string;
   status: 'open' | 'confirmed' | 'canceled';
   vendor_id: string;
@@ -29,6 +30,7 @@ export type ApiShipmentLine = {
 
 export type VendorOrderHeader = {
   id: string;
+  orderDate: string;
   deliveryDate: string;
   status: 'open'|'confirmed'|'canceled';
   vendorId: string;
@@ -52,13 +54,18 @@ export type VendorOrderLine = {
   note?: string;
 };
 
-export type MasterVendor = { id: string; name?: string | null };
+export type MasterVendor = {
+  id: string;
+  name: string;   // ★ これを追加
+};
+
 
 // type RawVendor = { id?: unknown; vendor_id?: unknown; code?: unknown; name?: unknown; vendor_name?: unknown };
 
 // サーバ応答（camel / snake 両対応）の生型定義
 type RawHeaderCamel = {
   id: number;
+  orderDate: string;
   deliveryDate: string;
   status: 'open'|'confirmed'|'canceled';
   vendorId: string;
@@ -68,6 +75,7 @@ type RawHeaderCamel = {
 };
 type RawHeaderSnake = {
   id: number;
+  order_date: string;
   delivery_date: string;
   status: 'open'|'confirmed'|'canceled';
   vendor_id: string;
@@ -203,6 +211,7 @@ export async function searchShipments(params: { dateFrom?: string; dateTo?: stri
 return {
   headers: headers.map((h): VendorOrderHeader => ({
     id: String(h.id),
+    orderDate: h.order_date,
     deliveryDate: h.delivery_date,
     status: h.status,
     vendorId: h.vendor_id,
@@ -221,6 +230,9 @@ export async function getShipment(id: string) {
   const header: VendorOrderHeader | undefined = raw.header
     ? {
         id: String(raw.header.id),
+        orderDate: 'orderDate' in raw.header
+          ? raw.header.orderDate
+          : (raw.header as RawHeaderSnake).order_date,
         deliveryDate: 'deliveryDate' in raw.header
           ? raw.header.deliveryDate
           : (raw.header as RawHeaderSnake).delivery_date,
@@ -416,7 +428,11 @@ export async function listVendors(): Promise<MasterVendor[]> {
       const idRaw   = r.id ?? r.vendor_id ?? r.code;
       const nameRaw = r.name ?? r.vendor_name ?? null;
       if (typeof idRaw !== "string") continue;
-      out.push({ id: idRaw, name: typeof nameRaw === "string" ? nameRaw : null });
+
+      // ★ 修正：name は必ず string にする
+      const name = typeof nameRaw === "string" ? nameRaw : "";
+
+      out.push({ id: idRaw, name });
     }
     return out;
   }
@@ -429,38 +445,15 @@ export async function listVendors(): Promise<MasterVendor[]> {
     const idRaw   = r.id ?? r.vendor_id ?? r.code;
     const nameRaw = r.name ?? r.vendor_name ?? null;
     if (typeof idRaw !== "string") continue;
-    out.push({ id: idRaw, name: typeof nameRaw === "string" ? nameRaw : null });
+
+    // ★ 修正：こちらも必ず string
+    const name = typeof nameRaw === "string" ? nameRaw : "";
+
+    out.push({ id: idRaw, name });
   }
   return out;
 }
 
-// export async function listVendors(): Promise<MasterVendor[]> {
-//   // まず /vendors を叩く（{ vendors: [...] } 形式）。無ければ /master/vendors をフォールバック。
-//   const res = await getJson<unknown>('/vendors').catch(() => undefined);
-
-//   // /vendors の正規形：{ vendors: [...] }
-//   if (res && typeof res === 'object' && Array.isArray((res as any).vendors)) {
-//     const arr = (res as any).vendors as RawVendor[];
-//     return arr.reduce<MasterVendor[]>((out, r) => {
-//       const idRaw   = r.id ?? r.vendor_id ?? r.code;
-//       const nameRaw = r.name ?? r.vendor_name ?? null;
-//       if (typeof idRaw !== 'string') return out;
-//       out.push({ id: idRaw, name: typeof nameRaw === 'string' ? nameRaw : null });
-//       return out;
-//     }, []);
-//   }
-
-//   // フォールバック：/master/vendors が直接配列を返す場合に対応
-//   const alt = await getJson<unknown>('/master/vendors').catch(() => []);
-//   const arr: RawVendor[] = Array.isArray(alt) ? (alt as RawVendor[]) : [];
-//   return arr.reduce<MasterVendor[]>((out, r) => {
-//     const idRaw   = r.id ?? r.vendor_id ?? r.code;
-//     const nameRaw = r.name ?? r.vendor_name ?? null;
-//     if (typeof idRaw !== 'string') return out;
-//     out.push({ id: idRaw, name: typeof nameRaw === 'string' ? nameRaw : null });
-//     return out;
-//   }, []);
-// }
 // ==== 受注→出荷 一括生成 ====
 export type GenerateShipmentsParams = {
   asOf?: string;          // 'YYYY-MM-DD HH:MM:SS'
@@ -470,31 +463,42 @@ export type GenerateShipmentsParams = {
   destinationId?: string;
   dryRun?: boolean;
 };
+
 // export type GenerateShipmentsResult = {
 //   ok: boolean;
-//   createdHeaders?: number;
-//   upsertedLines?: number;
-//   preview?: { headers: number; lines: number };
+//   createdHeaders: number; // 生成された（または対象となった）ヘッダ件数
+//   upsertedLines: number;  // 同じく明細件数
+//   preview?: {
+//     headers: number;
+//     lines: number;
+//   };
+//   // ★ 生成対象となった shipment.id 一覧（/generate の時だけ）
+//   generatedHeaderIds?: string[];
 // };
-
 export type GenerateShipmentsResult = {
   ok: boolean;
-  createdHeaders: number; // 生成された（または対象となった）ヘッダ件数
-  upsertedLines: number;  // 同じく明細件数
-  preview?: {
-    headers: number;
-    lines: number;
-  };
-  // ★ 生成対象となった shipment.id 一覧（/generate の時だけ）
-  generatedHeaderIds?: string[];
-};
 
-// export async function generateShipments(
-//   p: GenerateShipmentsParams
-// ): Promise<GenerateShipmentsResult> {
-//   // ← 既存の postJson をそのまま利用
-//   return postJson<GenerateShipmentsResult>("/shipments/generate", p);
-// }
+  // 既存フィールド
+  createdHeaders?: number; // 純粋な「新規ヘッダ作成数」
+  upsertedLines?: number;  // 明細の upsert 件数
+  preview?: {
+    headers: number;       // プレビュー対象ヘッダ数
+    lines: number;         // プレビュー対象明細数
+  };
+  // 生成対象となった shipment.id 一覧（/generate の時だけ）
+  generatedHeaderIds?: string[];
+
+  // ★ バックエンドの追加フィールド（いずれも optional）
+  countHeaders?: number;    // プレビュー時: 対象ヘッダ数
+  countLines?: number;      // プレビュー時: 対象明細数
+  headersAffected?: number; // 本処理時: 対象ヘッダ数（既存 + 新規）
+  linesAffected?: number;   // 本処理時: 対象明細数
+  skippedHeaders?: number;  // 確定済みでスキップされたヘッダ数
+  skippedLines?: number;    // 確定済みでスキップされた明細数
+
+  // エラー時メッセージ（あれば）
+  error?: string;
+};
 
 // サーバ生レスポンス用の補助型（any を避けるため）
 type RawGenerateShipmentsResponse = {

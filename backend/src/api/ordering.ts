@@ -2,7 +2,8 @@ import { Router } from 'express';
 import { db } from '../db';
 import { ID } from '../lib/id';
 import crypto from 'crypto';          // ★ これを追加
-import { ymd } from '../lib/dates';   // ★ 日付文字列 "YYYY-MM-DD" 用
+// import { ymd } from '../lib/dates';   // ★ 日付文字列 "YYYY-MM-DD" 用
+import { ymd, nowTimestampJst } from '../lib/dates';
 
 export const ordering = Router();
 
@@ -39,6 +40,13 @@ ordering.get('/entry', (req, res) => {
       return dt.getDay(); // 0..6
     };
     const weekday = weekdayFromYmd(businessDate);
+
+    // 納品予定日計算用（YYYY-MM-DD + n日）
+    const addDays = (ymdStr: string, days: number): string => {
+      const d = new Date(ymdStr + 'T00:00:00');
+      d.setDate(d.getDate() + days);
+      return ymd(d);  // ../lib/dates から import 済み
+    };
 
     // 2) アクティブ店舗一覧（is_active=1 のみ）
     const stores = db.prepare(`
@@ -203,15 +211,38 @@ ordering.get('/entry', (req, res) => {
     for (const r of filteredByVendorRule) {
       const up = pickUnitPrice(r.vendor_id, r.item_id, businessDate);
       const fallback = existingLinesMap[r.item_id];
+
       mergedLines.push({
         lineId: `ln-${r.item_id}`,
         itemId: r.item_id,
         qty: fallback ? fallback.qty : 0,
         unitPrice: up ?? 0,
         vendorId: r.vendor_id,
-        expectedArrivalDate: fallback ? fallback.expectedArrivalDate : null,
+        expectedArrivalDate: (() => {
+          // 既存発注／ドラフトに値があればそれを優先
+          if (fallback && fallback.expectedArrivalDate) {
+            return fallback.expectedArrivalDate;
+          }
+          // 無ければベンダー別ルールの LT から算出
+          const rule = perVendorRule[r.vendor_id];
+          const lt = rule?.leadTimeDays ?? 1; // ルールが無い場合は 1日をデフォルト
+          return addDays(businessDate, lt);
+        })(),
       });
     }
+
+    // for (const r of filteredByVendorRule) {
+    //   const up = pickUnitPrice(r.vendor_id, r.item_id, businessDate);
+    //   const fallback = existingLinesMap[r.item_id];
+    //   mergedLines.push({
+    //     lineId: `ln-${r.item_id}`,
+    //     itemId: r.item_id,
+    //     qty: fallback ? fallback.qty : 0,
+    //     unitPrice: up ?? 0,
+    //     vendorId: r.vendor_id,
+    //     expectedArrivalDate: fallback ? fallback.expectedArrivalDate : null,
+    //   });
+    // }
 
     // 8) 画面側ステータス
     let editable = true;
@@ -251,6 +282,8 @@ ordering.get('/entry', (req, res) => {
         vendorId: m.vendorId,
         unitPrice: m.unitPrice,
       })),
+      // ★ ここを追加：フロントの doSearch() はまずこれを見に行く
+      mergedLines,
       draft: {
         exists: !!existingOrderHeader,
         lines: mergedLines,
@@ -340,7 +373,9 @@ ordering.get('/detail', (req, res) => {
       o.expected_arrival_date AS expectedArrivalDate,
       o.subtotal,
       o.tax,
-      o.total
+      o.total,
+      o.created_at AS createdAt,
+      o.updated_at AS updatedAt
     FROM orders o
     WHERE o.id = ?
   `).get(orderId);
@@ -494,12 +529,12 @@ ordering.post('/submit', (req, res) => {
     const amount = unitPrice * qty;
     subtotal += amount;
 
-    // 納品予定日：行＞ヘッダ＞orderDate+1日
+    // 納品予定日：行＞ヘッダ（無ければ null）
     let expectedArrivalDate =
       ln.expectedArrivalDate ?? b.expectedArrivalDate ?? null;
-    if (!expectedArrivalDate) {
-      expectedArrivalDate = addDays(orderDate, 1);
-    }
+    // if (!expectedArrivalDate) {
+    //   expectedArrivalDate = addDays(orderDate, 1);
+    // }
 
     return {
       itemId,
@@ -538,7 +573,8 @@ ordering.post('/submit', (req, res) => {
 
   // ---- 永続化（UPSERT）----
   try {
-    const now = new Date().toISOString();
+    // const now = new Date().toISOString();
+    const now = nowTimestampJst();  // ← ここだけ差し替え
 
     // 既存注文（同一ビジネスキー）があるか？
     const existing = db

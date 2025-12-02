@@ -5,41 +5,72 @@ import type { InspectionHeader, InspectionLine } from "./inspectionApi";
 export function buildDiscrepancyCsv(
   headers: InspectionHeader[],
   lines: InspectionLine[],
-  scope?: { headerIds?: string[]; includeHeader?: boolean; delimiter?: "," | "\t" }
+  scope?: {
+    headerIds?: string[];
+    includeHeader?: boolean;
+    delimiter?: "," | "\t";
+  }
 ): string {
   const withHeader = scope?.includeHeader ?? true;
   const delimiter = scope?.delimiter ?? ",";
-  const target = scope?.headerIds ? new Set(scope.headerIds) : null;
 
-  const hMap = new Map(headers.map(h => [h.id, h]));
-  const rows: (string|number)[][] = [];
+  // 選択した検品IDのみ対象（なければ全件）
+  const targetHeaderIds = scope?.headerIds
+    ? new Set(scope.headerIds)
+    : null;
 
+  // id → header
+  const hMap = new Map<number, InspectionHeader>(
+    headers.map((h) => [h.id, h])
+  );
+
+  const rows: (string | number)[][] = [];
+
+  // ★ ヘッダ行（列を分割 & 品目名を追加）
   if (withHeader) {
     rows.push([
-      "納品日","ベンダーID","納品先ID","伝票ID",
-      "品目コード","出荷数","検品数","差異","単位","ロット"
+      "検品ID",
+      "納品日",
+      "ベンダーID",
+      "納品先ID",
+      "納品先名称",
+      "品目コード",
+      "品目名称",
+      "出荷数",
+      "検品数",
+      "差異数量",
+      "単位",
+      "ロット",
+      "備考",
     ]);
   }
 
   for (const l of lines) {
-    const h = hMap.get(l.headerId);
+    const h = hMap.get(l.inspectionId);
     if (!h) continue;
-    if (target && !target.has(h.id)) continue;
 
-    const diff = Number(l.inspectQty || 0) - Number(l.shipQty || 0);
+    // 指定ヘッダでの絞り込み
+    if (targetHeaderIds && !targetHeaderIds.has(String(h.id))) {
+      continue;
+    }
+
+    const diff = Number(l.diffQty ?? 0);
     if (diff === 0) continue;
 
     rows.push([
+      h.id,
       h.deliveryDate,
       h.vendorId,
       h.destinationId,
-      h.id,
+      h.destinationName ?? "",
       l.itemId,
-      Number(l.shipQty || 0),
-      Number(l.inspectQty || 0),
+      l.itemName ?? "",          // ★ 品目名称
+      Number(l.shipQty ?? 0),
+      Number(l.inspectedQty ?? 0),
       diff,
-      l.unit,
+      l.unit ?? "",
       l.lotNo ?? "",
+      l.note ?? "",
     ]);
   }
 

@@ -6,6 +6,8 @@ import { ListOrdered, Truck, ClipboardCheck, History, Menu } from "lucide-react"
 import { motion } from "framer-motion";
 import { loadLatestDraftLike } from "./db";
 import { toCsvString, downloadCsv } from "./utils/csv";
+import { VendorInspectionList } from "./vendor/VendorInspectionList";
+
 
 
 // 遅延ロード（必要時のみ読み込み）
@@ -15,9 +17,9 @@ const VendorShipments = React.lazy(() =>
 const VendorEdit = React.lazy(() =>
   import("./vendor/VendorEdit").then(m => ({ default: m.VendorEdit }))
 );
-const VendorInspectionList = React.lazy(() =>
-  import("./vendor/VendorInspectionList").then(m => ({ default: m.VendorInspectionList }))
-);
+// const VendorInspectionList = React.lazy(() =>
+//   import("./inspection/VendorInspectionList").then(m => ({ default: m.VendorInspectionList }))
+// );
 const HistoryPage = React.lazy(() => import("./HistoryPage"));
 // 店舗向け検品（/frontend/src/inspection 配下）
 const StoreInspectionList = React.lazy(() =>
@@ -577,9 +579,27 @@ function OrderEntryPrototype() {
     const withHeader = opts?.includeHeader ?? true;
     const orderDate = d.requestDate;
 
-    const calcArrival = () => {
-      const lt = orderRule?.leadTimeDays ?? 0;
+    const calcArrival = (ln: OrderLine): string => {
+      const raw = ln.expectedArrivalDate ?? d.expectedArrivalDate;
+
+      // 行 or ヘッダに日付が入っている場合はそれを優先
+      if (raw) {
+        try {
+          const base = new Date(raw + "T00:00:00");
+          const yyyy = base.getFullYear();
+          const mm = String(base.getMonth() + 1).padStart(2, "0");
+          const dd = String(base.getDate()).padStart(2, "0");
+          return `${yyyy}-${mm}-${dd}`;
+        } catch {
+          return raw;
+        }
+      }
+
+      // フォールバック：ベンダーLT×発注日
       try {
+        const item = itemsMap[ln.itemId ?? ""];
+        const vRule = item ? vendorRules[item.vendorId] : undefined;
+        const lt = vRule?.leadTimeDays ?? 1;
         const base = new Date(orderDate + "T00:00:00");
         base.setDate(base.getDate() + lt);
         const yyyy = base.getFullYear();
@@ -587,9 +607,31 @@ function OrderEntryPrototype() {
         const dd = String(base.getDate()).padStart(2, "0");
         return `${yyyy}-${mm}-${dd}`;
       } catch {
-        return d.expectedArrivalDate;
+        return orderDate;
       }
     };
+
+
+  // function buildOrderCsvRows(
+  //   d: OrderDraft,
+  //   opts?: { includeHeader?: boolean }
+  // ): (string | number | null)[][] {
+  //   const withHeader = opts?.includeHeader ?? true;
+  //   const orderDate = d.requestDate;
+
+  //   const calcArrival = () => {
+  //     const lt = orderRule?.leadTimeDays ?? 0;
+  //     try {
+  //       const base = new Date(orderDate + "T00:00:00");
+  //       base.setDate(base.getDate() + lt);
+  //       const yyyy = base.getFullYear();
+  //       const mm = String(base.getMonth() + 1).padStart(2, "0");
+  //       const dd = String(base.getDate()).padStart(2, "0");
+  //       return `${yyyy}-${mm}-${dd}`;
+  //     } catch {
+  //       return d.expectedArrivalDate;
+  //     }
+  //   };
 
     // 名称の解決ヘルパ
     const getStoreName = () => serverStoreName || getStoreNameById(d.storeId);
@@ -611,7 +653,8 @@ function OrderEntryPrototype() {
         const qty = Number(ln.qty ?? 0);
         const unitPrice = Number(d.lines.find(x => x.lineId === ln.lineId)?.unitPrice ?? 0);
         const amount = (ln.qty || 0) * unitPrice;
-        const arrivalDate = calcArrival();
+        const arrivalDate = calcArrival(ln);
+        // const arrivalDate = calcArrival();
 
         // 出力：店舗コード, 店舗名, ベンダーコード, ベンダー名, 発注日, 納品日, 品目コード, 品目名, 数量, 単価, 金額
         return [
@@ -929,10 +972,24 @@ function OrderEntryPrototype() {
                     const unitPrice = line.unitPrice ?? 0;
                     const amount = (line.qty || 0) * unitPrice;
 
-                    // ベンダーLTから納品予定日算出
-                    const lt = orderRule?.leadTimeDays ?? 0;
+                    // 行の expectedArrivalDate を優先して納品予定日を表示
                     const arrival = (() => {
+                      const raw = line.expectedArrivalDate;
+
+                      // サーバから日付が来ている場合
+                      if (raw) {
+                        try {
+                          const d = new Date(raw + "T00:00:00");
+                          return formatDateLocal(d);
+                        } catch {
+                          return raw;
+                        }
+                      }
+
+                      // フォールバック：ベンダーLT×発注日（万一サーバが日付を返してこない場合）
                       try {
+                        const vRule = vendorRules[line.vendorId];
+                        const lt = vRule?.leadTimeDays ?? 1;
                         const d = new Date(draft.requestDate + "T00:00:00");
                         d.setDate(d.getDate() + lt);
                         return formatDateLocal(d);
@@ -940,6 +997,22 @@ function OrderEntryPrototype() {
                         return draft.requestDate;
                       }
                     })();
+                  // displayedLines.map((line) => {
+                  //   const item = itemsMap[line.itemId] || undefined;
+                  //   const unitPrice = line.unitPrice ?? 0;
+                  //   const amount = (line.qty || 0) * unitPrice;
+
+                  //   // ベンダーLTから納品予定日算出
+                  //   const lt = orderRule?.leadTimeDays ?? 0;
+                  //   const arrival = (() => {
+                  //     try {
+                  //       const d = new Date(draft.requestDate + "T00:00:00");
+                  //       d.setDate(d.getDate() + lt);
+                  //       return formatDateLocal(d);
+                  //     } catch {
+                  //       return draft.requestDate;
+                  //     }
+                  //   })();
 
                     // 数量入力ハンドラ
                     const onQtyChange = (v: string) => {
@@ -1251,11 +1324,27 @@ export default function App() {
             />
           )}
           {route === 'inspection' && (
-            <VendorInspectionList vendorIdDefault="" onEdit={(inspectionId: string) => {
-              // 検品→編集画面の導線は今後の拡張で。現時点は一覧重視。
-              console.log('open inspection', inspectionId);
-            }} />
+            <VendorInspectionList
+              // dcId="DC01"
+              dcId="600502"
+              onBack={() => {
+                setRoute('order');
+                location.hash = '#order';
+              }}
+              onEdit={(headerId) => {
+                setEditId(headerId);
+                setRoute('vendorEdit');
+                location.hash = `#/vendor/shipments/edit?id=${encodeURIComponent(headerId)}`;
+              }}
+            />
           )}
+          {/* {route === 'inspection' && (
+            <VendorInspectionList 
+              dcId="DC01" 
+              onBack={() => navigate("/menu")}
+              onEdit={(headerId) => navigate(`/inspection/vendor/edit/${headerId}`)} 
+            />
+          )} */}
 
           {route === 'history' && <HistoryPage />}
 

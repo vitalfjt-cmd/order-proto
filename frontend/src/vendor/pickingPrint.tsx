@@ -1,205 +1,232 @@
-// src/vendor/pickingPrint.tsx
-import React from "react";
-import type { VendorOrderHeader, VendorOrderLine, TempZone } from "./apiVendor";
+// src/vendor/pickingPrint.ts
+import type { VendorOrderHeader, VendorOrderLine } from "./apiVendor";
 
-/** ユーティリティ */
-function esc(s: string | null | undefined): string {
-  const t = s ?? "";
-  return t.replace(/[&<>"']/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]!));
-}
-function nf0(n: number) { return new Intl.NumberFormat("ja-JP").format(n); }
+// 既存の「フラット型」ピッキングPDF（そのまま残してあります）
+export function openPickingPrint(
+  headers: VendorOrderHeader[],
+  lines: VendorOrderLine[]
+) {
+  const hMap = new Map(headers.map(h => [h.id, h]));
+  const sorted = [...lines]
+    .filter(l => (l.shipQty ?? 0) > 0)
+    .sort((a, b) => {
+      const ha = hMap.get(a.headerId)!;
+      const hb = hMap.get(b.headerId)!;
+      return (
+        ha.deliveryDate.localeCompare(hb.deliveryDate) ||
+        ha.vendorId.localeCompare(hb.vendorId) ||
+        ha.destinationId.localeCompare(hb.destinationId) ||
+        (a.itemId ?? "").localeCompare(b.itemId ?? "")
+      );
+    });
 
-type GroupInput = { header: VendorOrderHeader; lines: VendorOrderLine[] };
-
-/** 店舗別内訳を含む品目行 */
-type PickDetailRow = {
-  itemId: string;
-  itemName: string;
-  unit: string;
-  spec: string;
-  tempZone?: TempZone;
-  // 店舗別の数量内訳
-  stores: Array<{ destinationId: string; destinationName?: string; qty: number }>;
-  totalQty: number;
-};
-
-/**
- * ピッキングリスト（店舗内訳つき）
- * - 選択した伝票をまとめ、温度帯→品目コード順で出力
- * - 各品目の下に「店舗ごとの数量内訳」を表示
- */
-export function openPickingPrintWithStores(groups: GroupInput[]) {
-  const win = window.open("", "_blank");
-  if (!win) { alert("ポップアップがブロックされました。"); return; }
-
-  const style = `
+  const html = `<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>ピッキングリスト</title>
   <style>
+    body { font-family: system-ui, sans-serif; margin: 16px; }
+    h1 { font-size: 18px; margin: 0 0 8px; }
+    .meta { color:#475569; font-size: 12px; margin-bottom: 12px; }
+    table { width:100%; border-collapse: collapse; }
+    th, td { border-bottom:1px solid #e2e8f0; padding:6px 8px; }
+    th { position: sticky; top: 0; background: white; }
+    .right { text-align:right; }
     @media print {
-      @page { size: A4; margin: 10mm; }
-      .page { page-break-after: always; }
-      .page:last-child { page-break-after: auto; }
+      .noprint { display:none; }
+      th { position: sticky; top: 0; background: white; }
+      tr { page-break-inside: avoid; }
     }
-    body {
-      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Hiragino Sans", "Noto Sans JP",
-                   "Yu Gothic UI", Roboto, Arial, "Segoe UI Emoji", "Apple Color Emoji", "Noto Color Emoji", sans-serif;
-      color:#111;
-    }
-    h1 { font-size: 18px; margin: 0 0 6px; }
-    .meta { font-size:12px; color:#374151; margin-bottom: 8px; display:flex; flex-wrap:wrap; gap:12px; }
-    table { width:100%; border-collapse: collapse; table-layout: fixed; }
-    th, td { border:1px solid #e5e7eb; padding:4px 6px; }
-    th { background:#f8fafc; text-align:left; font-size: 12px; }
-    td { font-size: 12px; }
-    td.num, th.num { text-align:right; font-variant-numeric: tabular-nums; }
-    .w-code { width: 100px; }
-    .w-name { width: auto; }
-    .w-unit { width: 60px; }
-    .w-qty  { width: 90px; }
-    .section { margin: 8px 0 4px; font-weight: 700; }
-    .muted { color:#64748b; }
-    .subtable { width:100%; border-collapse: collapse; margin-top: 2px; }
-    .subtable th, .subtable td { border: 1px dashed #e5e7eb; padding: 3px 6px; font-size: 11px; }
-    .subtable th { background: #fafafa; }
-    .row-total { background:#f9fafb; font-weight:700; }
-    .footer-note { color:#64748b; font-size:11px; margin-top:4px; }
-  </style>`;
+  </style>
+</head>
+<body>
+  <div class="noprint" style="margin-bottom:12px">
+    <button onclick="window.print()">印刷</button>
+  </div>
+  <h1>ピッキングリスト</h1>
+  <div class="meta">行数: ${sorted.length}</div>
+  <table>
+    <thead>
+      <tr>
+        <th>納品日</th><th>ベンダー</th><th>納品先</th>
+        <th>品目コード</th><th>品目名</th><th>規格</th><th>温度帯</th>
+        <th class="right">出荷数量</th><th>単位</th><th>備考</th>
+      </tr>
+    </thead>
+    <tbody>
+      ${sorted.map(l => {
+        const h = hMap.get(l.headerId)!;
+        return `
+          <tr>
+            <td>${h.deliveryDate}</td>
+            <td>${h.vendorId}</td>
+            <td>${h.destinationId} ${h.destinationName ?? ""}</td>
+            <td>${l.itemId}</td>
+            <td>${l.itemName}</td>
+            <td>${l.spec ?? ""}</td>
+            <td>${l.tempZone ?? ""}</td>
+            <td class="right">${l.shipQty}</td>
+            <td>${l.unit ?? ""}</td>
+            <td>${l.note ?? ""}</td>
+          </tr>
+        `;
+      }).join("")}
+    </tbody>
+  </table>
+</body>
+</html>`;
 
-  // 条件表記（納品日・ベンダー）は、選択伝票から代表値を出す
-  const uniq = <T,>(arr: T[]) => Array.from(new Set(arr));
-  const deliveryDates = uniq(groups.map(g => g.header.deliveryDate)).sort();
-  const vendorIds = uniq(groups.map(g => g.header.vendorId));
+  const w = window.open("", "_blank");
+  if (!w) return;
+  w.document.open();
+  w.document.write(html);
+  w.document.close();
+}
 
-  // 品目ごとに「店舗内訳」を集計
-  const map = new Map<string, PickDetailRow>();
+// 店舗内訳付きピッキングPDF（品目ごと＋単位＋品目計）
+type PickingGroup = { header: VendorOrderHeader; lines: VendorOrderLine[] };
+
+export function openPickingPrintWithStores(groups: PickingGroup[]) {
+  // ヘッダと行をフラット化
+  const headers = groups.map(g => g.header);
+  const hMap = new Map(headers.map(h => [h.id, h]));
+
+  const allLines: VendorOrderLine[] = [];
   for (const g of groups) {
     for (const l of g.lines) {
-      const key = l.itemId || "";
-      if (!key) continue;
-      const qty = Number(l.shipQty) || 0;
-      if (qty === 0) continue; // 0は除外（必要なら含めてもOK）
-
-      const destId = g.header.destinationId;
-      const destName = g.header.destinationName;
-
-      const found = map.get(key);
-      if (found) {
-        const store = found.stores.find(s => s.destinationId === destId);
-        if (store) store.qty += qty;
-        else found.stores.push({ destinationId: destId, destinationName: destName, qty });
-        found.totalQty += qty;
-      } else {
-        map.set(key, {
-          itemId: l.itemId || "",
-          itemName: l.itemName || "",
-          unit: l.unit || "",
-          spec: l.spec || "",
-          tempZone: l.tempZone,
-          stores: [{ destinationId: destId, destinationName: destName, qty }],
-          totalQty: qty,
-        });
+      if ((l.shipQty ?? 0) > 0) {
+        allLines.push(l);
       }
     }
   }
 
-  // 並び：温度帯（常温→チルド→冷凍）→ 品目コード
-  const zoneOrder: TempZone[] = ["ambient","chilled","frozen"];
-  const rows = Array.from(map.values()).sort((a,b) => {
-    const za = zoneOrder.indexOf(a.tempZone ?? "ambient");
-    const zb = zoneOrder.indexOf(b.tempZone ?? "ambient");
-    if (za !== zb) return za - zb;
-    return a.itemId.localeCompare(b.itemId);
-  });
+  // 品目単位にグルーピング
+  type ItemGroup = {
+    itemId: string;
+    itemName: string;
+    spec: string;
+    unit: string;
+    rows: { header: VendorOrderHeader; line: VendorOrderLine }[];
+  };
 
-  // 温度帯でグルーピング
-  const byZone: Record<string, PickDetailRow[]> = {};
-  for (const r of rows) {
-    const k = r.tempZone ?? "ambient";
-    (byZone[k] ||= []).push(r);
+  const itemMap = new Map<string, ItemGroup>();
+
+  for (const line of allLines) {
+    const h = hMap.get(line.headerId)!;
+    const key = line.itemId;
+    if (!key) continue;
+
+    let grp = itemMap.get(key);
+    if (!grp) {
+      grp = {
+        itemId: line.itemId,
+        itemName: line.itemName ?? "",
+        spec: line.spec ?? "",
+        unit: line.unit ?? "",
+        rows: [],
+      };
+      itemMap.set(key, grp);
+    }
+    grp.rows.push({ header: h, line });
   }
-  const zoneJp: Record<string,string> = { ambient:"常温", chilled:"チルド", frozen:"冷凍" };
 
-  const now = new Date();
-  const nowStr =
-    `${now.getFullYear()}/${String(now.getMonth()+1).padStart(2,"0")}/${String(now.getDate()).padStart(2,"0")} ` +
-    `${String(now.getHours()).padStart(2,"0")}:${String(now.getMinutes()).padStart(2,"0")}:${String(now.getSeconds()).padStart(2,"0")}`;
+  const itemGroups = Array.from(itemMap.values()).sort((a, b) =>
+    a.itemId.localeCompare(b.itemId)
+  );
 
-  const html = `
-  <!doctype html>
-  <html lang="ja"><head><meta charset="utf-8"><title>ピッキングリスト（店舗内訳）</title>${style}</head>
-  <body>
-    <div class="page">
-      <h1>ピッキングリスト（店舗内訳）</h1>
-      <div class="meta">
-        <div>納品日：${esc(deliveryDates.length === 1 ? deliveryDates[0] : `${deliveryDates[0]} ～ ${deliveryDates[deliveryDates.length-1]}`)}</div>
-        <div>ベンダー：${esc(vendorIds.length === 1 ? vendorIds[0] : vendorIds.join(", "))}</div>
-        <div>対象伝票数：${groups.length}</div>
-        <div>発行：${nowStr}</div>
-      </div>
+  const totalLines = allLines.length;
+  const totalItems = itemGroups.length;
 
-      ${(["ambient","chilled","frozen"] as const).map(k => {
-        const xs = byZone[k] || [];
-        if (xs.length === 0) return "";
-        return `
-          <div class="section">${esc(zoneJp[k])}（${xs.length}品目）</div>
-          <table>
-            <colgroup>
-              <col class="w-code" />
-              <col class="w-name" />
-              <col class="w-unit" />
-              <col class="w-qty" />
-            </colgroup>
-            <thead>
-              <tr>
-                <th>品目コード</th>
-                <th>品目名</th>
-                <th>単位</th>
-                <th class="num">合計数量</th>
-              </tr>
-            </thead>
-            <tbody>
-              ${xs.map(r => {
-                const storesSorted = [...r.stores].sort((a,b) => a.destinationId.localeCompare(b.destinationId));
-                const storesHtml = `
-                  <table class="subtable">
-                    <thead>
-                      <tr>
-                        <th style="width: 160px;">納品先</th>
-                        <th class="num" style="width: 90px;">数量</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      ${storesSorted.map(s => `
-                        <tr>
-                          <td>${esc(s.destinationId)} ${esc(s.destinationName)}</td>
-                          <td class="num">${nf0(s.qty)}</td>
-                        </tr>
-                      `).join("")}
-                    </tbody>
-                  </table>`;
-                return `
-                  <tr>
-                    <td style="font-family: ui-monospace, SFMono-Regular, Menlo, monospace;">${esc(r.itemId)}</td>
-                    <td>
-                      ${esc(r.itemName)}
-                      ${storesHtml}
-                    </td>
-                    <td>${esc(r.unit)}</td>
-                    <td class="num row-total">${nf0(r.totalQty)}</td>
-                  </tr>
-                `;
-              }).join("")}
-            </tbody>
-          </table>
-        `;
+  const html = `<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>ピッキングリスト（店舗内訳）</title>
+  <style>
+    body { font-family: system-ui, sans-serif; margin: 16px; }
+    h1 { font-size: 18px; margin: 0 0 8px; }
+    .meta { color:#475569; font-size: 12px; margin-bottom: 12px; }
+    table { width:100%; border-collapse: collapse; }
+    th, td { border-bottom:1px solid #e2e8f0; padding:4px 6px; }
+    th { background:#f8fafc; }
+    .right { text-align:right; }
+    .item-head td { border-top:2px solid #94a3b8; }
+    .item-total td {
+      font-weight: 600;
+      background:#f9fafb;
+      border-top:1px solid #cbd5e1;
+    }
+    @media print {
+      .noprint { display:none; }
+      tr { page-break-inside: avoid; }
+    }
+  </style>
+</head>
+<body>
+  <div class="noprint" style="margin-bottom:12px">
+    <button onclick="window.print()">印刷</button>
+  </div>
+  <h1>ピッキングリスト（店舗内訳）</h1>
+  <div class="meta">
+    品目数: ${totalItems} ／ 明細行数: ${totalLines}
+  </div>
+  <table>
+    <thead>
+      <tr>
+        <th>品目コード</th>
+        <th>品目名</th>
+        <th>規格</th>
+        <th>単位</th>
+        <th>納品先</th>
+        <th class="right">出荷数量</th>
+      </tr>
+    </thead>
+    <tbody>
+      ${itemGroups.map(g => {
+        const rows = g.rows
+          .sort((a, b) =>
+            a.header.destinationId.localeCompare(b.header.destinationId)
+          );
+        const totalQty = rows.reduce(
+          (sum, r) => sum + Number(r.line.shipQty ?? 0),
+          0
+        );
+        const storeCount = rows.length;
+
+        const rowHtml = rows
+          .map((r, idx) => {
+            const h = r.header;
+            const showItem = idx === 0;
+            return `
+            <tr class="${showItem ? "item-head" : ""}">
+              <td>${showItem ? g.itemId : ""}</td>
+              <td>${showItem ? g.itemName : ""}</td>
+              <td>${showItem ? g.spec : ""}</td>
+              <td>${showItem ? (g.unit ?? "") : ""}</td>
+              <td>${h.destinationId} ${h.destinationName ?? ""}</td>
+              <td class="right">${r.line.shipQty}</td>
+            </tr>`;
+          })
+          .join("");
+
+        const totalRow = `
+          <tr class="item-total">
+            <td colspan="4"></td>
+            <td class="right">品目計（${storeCount}件）</td>
+            <td class="right">${totalQty}${g.unit ? " " + g.unit : ""}</td>
+          </tr>`;
+
+        return rowHtml + totalRow;
       }).join("")}
+    </tbody>
+  </table>
+</body>
+</html>`;
 
-      <div class="footer-note">※ 各品目の下に、店舗（納品先）ごとの数量内訳を表示しています。</div>
-    </div>
-
-    <script>window.onload = () => window.print();</script>
-  </body></html>`;
-
-  win.document.open();
-  win.document.write(html);
-  win.document.close();
+  const w = window.open("", "_blank");
+  if (!w) return;
+  w.document.open();
+  w.document.write(html);
+  w.document.close();
 }

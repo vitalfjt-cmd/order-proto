@@ -62,7 +62,7 @@ CREATE TABLE IF NOT EXISTS vendor_weekly_rules (
   cutoff_hhmm_sat      TEXT    NOT NULL DEFAULT '04:00',
   lead_time_days_sat   INTEGER NOT NULL DEFAULT 1,
 
-  updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+  updated_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
 );
 
 -- 店舗×ベンダーの上書き
@@ -105,7 +105,7 @@ CREATE TABLE IF NOT EXISTS store_vendor_overrides (
   cutoff_hhmm_sat_override      TEXT,
   lead_time_days_sat_override   INTEGER,
 
-  updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),
 
   PRIMARY KEY (store_id, vendor_id)
 );
@@ -136,8 +136,8 @@ CREATE TABLE IF NOT EXISTS orders (
   tax INTEGER NOT NULL,
   total INTEGER NOT NULL,
   tax_rate REAL NOT NULL,
-  created_at TEXT NOT NULL DEFAULT (datetime('now')),
-  updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+  created_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),
+  updated_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
 );
 
 -- 受注明細
@@ -161,8 +161,9 @@ CREATE TABLE IF NOT EXISTS shipments (
   destination_name TEXT,
   delivery_date    TEXT NOT NULL, -- 'YYYY-MM-DD'
   status           TEXT NOT NULL DEFAULT 'open' CHECK (status IN ('open','confirmed','canceled')),
-  created_at       TEXT NOT NULL DEFAULT (datetime('now')),
-  updated_at       TEXT NOT NULL DEFAULT (datetime('now'))
+  created_at       TEXT NOT NULL DEFAULT (datetime('now','localtime')),
+  updated_at       TEXT NOT NULL DEFAULT (datetime('now','localtime')), 
+  order_date       TEXT
 );
 
 -- 出荷明細
@@ -278,6 +279,39 @@ SELECT
   i.name AS item_name
 FROM shipment_lines sl
 LEFT JOIN items i ON i.id = sl.item_id;
+
+-- 検品ヘッダ
+CREATE TABLE IF NOT EXISTS inspections (
+  id           INTEGER PRIMARY KEY AUTOINCREMENT,
+  shipment_id  INTEGER NOT NULL UNIQUE,   -- 対象となる出荷伝票
+  owner_id     CHAR(4) NOT NULL,          -- 検品主体（当面は店舗ID＝destination_id）
+  delivery_date TEXT,                     -- 納品日 YYYY-MM-DD
+  status       TEXT NOT NULL DEFAULT 'open',  -- open / completed / audited など今後拡張
+  created_at   TEXT NOT NULL DEFAULT (datetime('now','localtime')),
+  updated_at   TEXT NOT NULL DEFAULT (datetime('now','localtime')),
+  FOREIGN KEY (shipment_id) REFERENCES shipments(id)
+);
+
+
+-- 検品明細
+CREATE TABLE inspection_lines (
+  id             INTEGER PRIMARY KEY AUTOINCREMENT,
+  inspection_id  INTEGER NOT NULL,
+  item_id        CHAR(6) NOT NULL,
+  ship_qty       REAL NOT NULL DEFAULT 0,  -- 出荷数量（参照用）
+  inspected_qty  REAL NOT NULL DEFAULT 0,  -- 検品数量（編集対象）
+  diff_qty       REAL NOT NULL DEFAULT 0,  -- inspected_qty - ship_qty
+  unit           TEXT,
+  spec           TEXT,
+  temp_zone      TEXT,
+  lot_no         TEXT,
+  note           TEXT,
+  created_at     TEXT NOT NULL DEFAULT (datetime('now','localtime')),
+  updated_at     TEXT NOT NULL DEFAULT (datetime('now','localtime')),
+  UNIQUE(inspection_id, item_id),
+  FOREIGN KEY (inspection_id) REFERENCES inspections(id)
+);
+
 
 -- インデックス・トリガー類
 -- CREATE UNIQUE INDEX IF NOT EXISTS ux_shipment_lines_header_item

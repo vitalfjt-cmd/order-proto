@@ -18,9 +18,16 @@ type OrderListResponse = {
 };
 type OrderDetail = {
   header: {
-    id: string; storeId: string; vendorId: string | null;
-    orderDate: string; expectedArrivalDate: string | null;
-    subtotal: number; tax: number; total: number;
+    id: string;
+    storeId: string;
+    vendorId: string | null;
+    orderDate: string;
+    expectedArrivalDate: string | null;
+    subtotal: number;
+    tax: number;
+    total: number;
+    createdAt?: string | null;
+    updatedAt?: string | null;
   };
   lines: { itemId: string; itemName?: string; qty: number; unitPrice: number; amount: number }[];
 };
@@ -93,8 +100,16 @@ export default function HistoryPage() {
       const dj = await r.json();
       setDetail({
         header: dj?.header ?? {
-          id: orderId, storeId: "", vendorId: null, orderDate: "", expectedArrivalDate: null,
-          subtotal: 0, tax: 0, total: 0
+          id: orderId,
+          storeId: "",
+          vendorId: null,
+          orderDate: "",
+          expectedArrivalDate: null,
+          subtotal: 0,
+          tax: 0,
+          total: 0,
+          createdAt: null,
+          updatedAt: null,
         },
         lines: Array.isArray(dj?.lines) ? dj.lines : []
       });
@@ -241,6 +256,10 @@ export default function HistoryPage() {
               店舗: {detail.header.storeId}／ベンダ: {detail.header.vendorId ?? "(全)"}／
               発注日: {detail.header.orderDate}／納品予定: {detail.header.expectedArrivalDate ?? "-"}／
               合計: ¥{detail.header.total.toLocaleString()}
+            </div>
+            <div className="text-xs mb-2 text-gray-600">
+              作成: {detail.header.createdAt ?? "-"}／
+              更新: {detail.header.updatedAt ?? "-"}
             </div>
             <div className="overflow-x-auto max-h-[60vh]">
               <table className="min-w-full text-sm">

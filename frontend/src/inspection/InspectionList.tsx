@@ -1,4 +1,5 @@
-import React, { useMemo, useState } from "react";
+// import React, { useMemo, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import { searchInspections, confirmInspections } from "./inspectionApi";
 import type { OwnerType, InspectionHeader, InspectionLine } from "./inspectionApi";
 import { buildDiscrepancyCsv } from "./discrepancyCsv";
@@ -6,7 +7,11 @@ import { downloadCsv } from "../utils/csv";
 import { buildSlipsFromInspections } from "../slips/slipsApi";
 import { buildSlipsCsv, openSlipsPrint } from "../slips/slipsCsvPdf";
 import { logEvent } from "../auditlog";
+import { VendorModal } from "../components/VendorModal";
 
+function ymd(date: Date): string {
+  return date.toISOString().slice(0, 10);
+}
 type Props = {
   ownerType: OwnerType;   // "STORE" | "DC"
   ownerId: string;        // 例: "0001" / "DC01"
@@ -22,19 +27,97 @@ export function InspectionList({ ownerType, ownerId, onEdit, onBack }: Props) {
   const [headers, setHeaders] = useState<InspectionHeader[]>([]);
   const [lines, setLines] = useState<InspectionLine[]>([]);
   const [selected, setSelected] = useState<Record<string, boolean>>({});
+  const [vendorModalOpen, setVendorModalOpen] = useState(false);
+  // 状態フィルタ: all / open / confirmed
+  const [statusFilter, setStatusFilter] = useState<"all" | "open" | "confirmed">("all");
+  // 差異ありのみ表示
+  const [showOnlyDiff, setShowOnlyDiff] = useState<boolean>(false);
 
-  async function doSearch(): Promise<void> {
-       const normalize = (s: string, width: number) => {
-         const digits = String(s || "").replace(/\D/g, "");
-         return digits ? digits.padStart(width, "0") : "";
-       };
-       const vId = vendorId ? normalize(vendorId, 6) : "";
-    const res = await searchInspections({ 
-      // from, to, vendorId: vendorId || undefined, ownerType, ownerId 
-           from, to,
-           vendorId: vId || undefined,
-           ownerType, ownerId
+
+
+   // 検品ヘッダごとの「差異ありフラグ」を計算
+  const headerHasDiff = useMemo<Record<string, boolean>>(() => {
+    const map: Record<string, boolean> = {};
+    for (const l of lines) {
+      const diff = Number(l.diffQty ?? 0);
+      if (!diff) continue;
+      const inspectionId = String(l.inspectionId);
+      map[inspectionId] = true;
+    }
+    return map;
+  }, [lines]);
+
+  // 状態フィルタ / 差異のみフィルタを適用したヘッダ
+  const filteredHeaders = useMemo(() => {
+    return headers.filter((h) => {
+      const st = (h.status ?? "").toLowerCase().trim();
+      const isOpen = st === "open";
+      const isConfirmed = !isOpen; // open 以外は「検収済み」と扱う
+
+      // 状態フィルタ
+      if (statusFilter === "open" && !isOpen) return false;
+      if (statusFilter === "confirmed" && !isConfirmed) return false;
+
+      // 差異ありのみ
+      if (showOnlyDiff && !headerHasDiff[String(h.id)]) return false;
+
+      return true;
     });
+  }, [headers, statusFilter, showOnlyDiff, headerHasDiff]);
+
+
+  // 初期表示時：「今日-3日 ～ 今日」をデフォルトにして自動検索
+  useEffect(() => {
+    const today = new Date();
+    const to0 = ymd(today);
+    const fromDate = new Date(today.getTime() - 3 * 24 * 60 * 60 * 1000);
+    const from0 = ymd(fromDate);
+
+    setFrom(from0);
+    setTo(to0);
+
+    // state 反映を待たず、計算した値で即検索
+    (async () => {
+      await doSearch({ from: from0, to: to0 });
+    })();
+    // ownerType / ownerId が変わるケースは少ない想定なので依存に含める
+  }, [ownerType, ownerId]);
+
+  async function doSearch(initial?: {
+    from?: string;
+    to?: string;
+    vendorId?: string;
+  }): Promise<void> {
+    const normalize = (s: string, width: number) => {
+      const digits = String(s || "").replace(/\D/g, "");
+      return digits ? digits.padStart(width, "0") : "";
+    };
+
+    const fromVal = initial?.from ?? from;
+    const toVal = initial?.to ?? to;
+
+    // ★ 日付バリデーション（from > to の場合は検索しない）
+    if (fromVal && toVal && fromVal > toVal) {
+      alert("開始日が終了日より後になっています。日付を確認してください。");
+      return;
+    }
+
+    // vendorId は引数があればそちらを優先
+    const vendorRaw =
+      initial && "vendorId" in initial
+        ? initial.vendorId ?? ""
+        : vendorId;
+
+    const vId = vendorRaw ? normalize(vendorRaw, 6) : "";
+
+    const res = await searchInspections({
+      from: fromVal || undefined,
+      to: toVal || undefined,
+      vendorId: vId || undefined,
+      ownerType,
+      ownerId,
+    });
+
     setHeaders(res.headers);
     setLines(res.lines);
     const initSel: Record<string, boolean> = {};
@@ -58,7 +141,7 @@ export function InspectionList({ ownerType, ownerId, onEdit, onBack }: Props) {
     for (const h of targets) {
       logEvent({
         type: "inspection.confirm",
-        headerId: h.id,
+        headerId: String(h.id),
         ownerId: ownerId,            // ← この一覧コンポーネントが持っている ownerId を使用
         vendorId: h.vendorId,
         destinationId: h.destinationId,
@@ -71,15 +154,49 @@ export function InspectionList({ ownerType, ownerId, onEdit, onBack }: Props) {
     await doSearch();
   }
 
-  const totals = useMemo<{ cnt: number; ship: number; insp: number }>(() => {
-    const cnt = headers.length;
-    const bySel = new Set(headers.filter(h => selected[h.id]).map(h => h.id));
-    const ship = lines.filter(l => bySel.size === 0 || bySel.has(l.headerId))
-                      .reduce((s, l) => s + Number(l.shipQty || 0), 0);
-    const insp = lines.filter(l => bySel.size === 0 || bySel.has(l.headerId))
-                      .reduce((s, l) => s + Number(l.inspectQty || 0), 0);
-    return { cnt, ship, insp };
-  }, [headers, lines, selected]);
+  const totals = useMemo<{
+    cnt: number;
+    ship: number;
+    insp: number;
+    diffCount: number;
+  }>(() => {
+    const cnt = filteredHeaders.length;
+
+    const filteredIdSet = new Set(filteredHeaders.map((h) => h.id));
+
+    const bySel = new Set(
+      filteredHeaders.filter((h) => selected[h.id]).map((h) => h.id)
+    );
+
+    const ship = lines
+      .filter(
+        (l) =>
+          filteredIdSet.has(l.inspectionId) &&
+          (bySel.size === 0 || bySel.has(l.inspectionId))
+      )
+      .reduce((s, l) => s + Number(l.shipQty ?? 0), 0);
+
+    const insp = lines
+      .filter(
+        (l) =>
+          filteredIdSet.has(l.inspectionId) &&
+          (bySel.size === 0 || bySel.has(l.inspectionId))
+      )
+      .reduce((s, l) => s + Number(l.inspectedQty ?? 0), 0);
+
+    // 差異ありヘッダ件数（フィルタ＋選択に応じて）
+    const diffHeaderIds = new Set<number>();
+    for (const l of lines) {
+      const diff = Number(l.diffQty ?? 0);
+      if (!diff) continue;
+      if (!filteredIdSet.has(l.inspectionId)) continue;
+      if (bySel.size > 0 && !bySel.has(l.inspectionId)) continue;
+      diffHeaderIds.add(l.inspectionId);
+    }
+
+    return { cnt, ship, insp, diffCount: diffHeaderIds.size };
+  }, [filteredHeaders, lines, selected]);
+
 
   return (
     <div className="p-4 space-y-3">
@@ -88,31 +205,103 @@ export function InspectionList({ ownerType, ownerId, onEdit, onBack }: Props) {
         {onBack && <button className="border rounded px-3 py-1" onClick={onBack}>← 戻る</button>}
         <label>期間From <input type="date" value={from} onChange={(e)=>setFrom(e.target.value)} className="border rounded px-2 py-1"/></label>
         <label>To <input type="date" value={to} onChange={(e)=>setTo(e.target.value)} className="border rounded px-2 py-1"/></label>
-        <label>ベンダー <input value={vendorId} onChange={(e)=>setVendorId(e.target.value)} className="border rounded px-2 py-1 w-28"/></label>
-        <button className="border rounded px-3 py-1" onClick={doSearch}>検索</button>
+        <div className="flex items-center gap-2">
+        <label>
+          ベンダーID
+          <input
+            value={vendorId}
+            onChange={(e) => setVendorId(e.target.value)}
+            className="border rounded px-2 py-1 w-28"
+            placeholder="000001"
+          />
+        </label>
+
+        <button
+          className="border rounded px-2 py-1"
+          onClick={() => setVendorModalOpen(true)}
+        >
+          選択…
+        </button>
+        <label>
+          状態
+          <select
+            value={statusFilter}
+            onChange={(e) =>
+              setStatusFilter(e.target.value as "all" | "open" | "confirmed")
+            }
+            className="border rounded px-2 py-1 ml-1"
+          >
+            <option value="all">全て</option>
+            <option value="open">未検収</option>
+            <option value="confirmed">検収済み</option>
+          </select>
+        </label>
+        <label className="flex items-center gap-1">
+          <input
+            type="checkbox"
+            checked={showOnlyDiff}
+            onChange={(e) => setShowOnlyDiff(e.target.checked)}
+          />
+          差異ありのみ
+        </label>
+      </div>
+      <button className="border rounded px-3 py-1" onClick={() => doSearch()}>検索</button>
         <button
           className="border rounded px-3 py-1"
           onClick={() => {
-            const selIds = headers.filter(h => selected[h.id]).map(h => h.id);
+            const today = new Date();
+            const to0 = ymd(today);
+            const fromDate = new Date(
+              today.getTime() - 3 * 24 * 60 * 60 * 1000
+            );
+            const from0 = ymd(fromDate);
+
+            setFrom(from0);
+            setTo(to0);
+            setVendorId("");
+            setStatusFilter("all");
+            setShowOnlyDiff(false);
+            setSelected({});
+
+            doSearch({ from: from0, to: to0, vendorId: "" });
+          }}
+        >
+          条件クリア
+        </button>
+        <button
+          className="border rounded px-3 py-1"
+          onClick={() => {
+            const selIds = headers
+              .filter((h) => selected[h.id])
+              .map((h) => String(h.id));
+
             const csv = buildDiscrepancyCsv(headers, lines, {
               headerIds: selIds.length ? selIds : undefined,
               includeHeader: true,
               delimiter: ",",
             });
+
             const ext = "csv";
-            const stamp = new Date().toISOString().slice(0,19).replace(/[-:T]/g,"");
-            downloadCsv(`discrepancy_${ownerType}_${ownerId}_${stamp}.${ext}`, csv);
+            const stamp = new Date()
+              .toISOString()
+              .slice(0, 19)
+              .replace(/[-:T]/g, "");
+            downloadCsv(
+              `discrepancy_${ownerType}_${ownerId}_${stamp}.${ext}`,
+              csv
+            );
           }}
-          disabled={headers.length===0}
+          disabled={headers.length === 0}
         >
           差異CSV
         </button>
-        {ownerType === "DC" && (
+
+        {/* {ownerType === "DC" && (
           <>
             <button
               className="border rounded px-3 py-1"
               onClick={() => {
-                const selIds = headers.filter(h => selected[h.id]).map(h => h.id);
+                const selIds = headers.filter(h => selected[h.id]).map(h => String(h.id));
                 const slips = buildSlipsFromInspections(headers, lines, { headerIds: selIds.length ? selIds : undefined });
                 if (slips.length === 0) { alert("差異がないため、発行対象の伝票がありません。"); return; }
                 const csv = buildSlipsCsv(slips, { includeHeader: true, delimiter: "," });
@@ -126,7 +315,7 @@ export function InspectionList({ ownerType, ownerId, onEdit, onBack }: Props) {
             <button
               className="border rounded px-3 py-1"
               onClick={() => {
-                const selIds = headers.filter(h => selected[h.id]).map(h => h.id);
+                const selIds = headers.filter(h => selected[h.id]).map(h => String(h.id));
                 const slips = buildSlipsFromInspections(headers, lines, { headerIds: selIds.length ? selIds : undefined });
                 if (slips.length === 0) { alert("差異がないため、発行対象の伝票がありません。"); return; }
                 openSlipsPrint(slips);
@@ -136,13 +325,25 @@ export function InspectionList({ ownerType, ownerId, onEdit, onBack }: Props) {
               伝票発行PDF
             </button>
           </>
-        )}
+        )} */}
 
         <div className="ml-auto flex items-center gap-4">
           <span>件数: <b>{totals.cnt}</b></span>
           <span>出荷数合計: <b>{totals.ship}</b></span>
           <span>検品数合計: <b>{totals.insp}</b></span>
-          <button className="border rounded px-3 py-1" onClick={handleConfirm} disabled={headers.every(h => !(selected[h.id] && h.status==="open"))}>選択を検収確定</button>
+          <span>差異あり: <b>{totals.diffCount}</b> 件</span>
+
+          {ownerType === "STORE" && (
+            <button
+              className="border rounded px-3 py-1"
+              onClick={handleConfirm}
+              disabled={headers.every(
+                (h) => !(selected[h.id] && h.status === "open")
+              )}
+            >
+              選択を検収確定
+            </button>
+          )}  
         </div>
       </div>
 
@@ -153,15 +354,23 @@ export function InspectionList({ ownerType, ownerId, onEdit, onBack }: Props) {
               <th style={{ borderBottom:"1px solid #e2e8f0", padding:"6px 8px" }}>
                 <input
                   type="checkbox"
-                  onChange={(e)=> {
+                  onChange={(e) => {
                     const on = e.target.checked;
-                    const next: Record<string, boolean> = {};
-                    for (const h of headers) next[h.id] = on;
-                    setSelected(next);
+                    setSelected((prev) => {
+                      const next: Record<string, boolean> = { ...prev };
+                      for (const h of filteredHeaders) {
+                        next[h.id] = on;
+                      }
+                      return next;
+                    });
                   }}
-                  checked={headers.length>0 && headers.every(h => selected[h.id])}
+                  checked={
+                    filteredHeaders.length > 0 &&
+                    filteredHeaders.every((h) => selected[h.id])
+                  }
                 />
               </th>
+              <th style={{ borderBottom:"1px solid #e2e8f0", padding:"6px 8px" }}>検品ID</th>
               <th style={{ borderBottom:"1px solid #e2e8f0", padding:"6px 8px" }}>納品日</th>
               <th style={{ borderBottom:"1px solid #e2e8f0", padding:"6px 8px" }}>ベンダー</th>
               <th style={{ borderBottom:"1px solid #e2e8f0", padding:"6px 8px" }}>納品先</th>
@@ -170,27 +379,64 @@ export function InspectionList({ ownerType, ownerId, onEdit, onBack }: Props) {
             </tr>
           </thead>
           <tbody>
-            {headers.map((h: InspectionHeader) => {
-              const isConfirmed = h.status === "confirmed";
+            {filteredHeaders.map((h: InspectionHeader) => {
+              const st = (h.status ?? "").toLowerCase().trim();
+              const isOpen = st === "open";
+              const isCompleted = !isOpen;
+              const hasDiff = headerHasDiff[String(h.id)];
+
+              const rowStyle: React.CSSProperties = {
+                borderBottom: "1px solid #e2e8f0",
+                opacity: isCompleted ? 0.65 : 1,
+                backgroundColor: hasDiff ? "#fee2e2" : undefined,
+              };
+
               return (
-                <tr key={h.id} style={{ borderBottom:"1px solid #e2e8f0", opacity: isConfirmed ? 0.65 : 1 }}>
+                <tr key={h.id} style={rowStyle}>
                   <td style={{ padding:"6px 8px", textAlign:"center" }}>
-                    <input type="checkbox" checked={!!selected[h.id]} onChange={(e)=>toggleOne(h.id, e.target.checked)} />
+                    <input type="checkbox" checked={!!selected[h.id]} onChange={(e)=>toggleOne(String(h.id), e.target.checked)} />
                   </td>
+                  <td style={{ padding:"6px 8px" }}>{h.id}</td>
                   <td style={{ padding:"6px 8px" }}>{h.deliveryDate}</td>
                   <td style={{ padding:"6px 8px" }}>{h.vendorId}</td>
                   <td style={{ padding:"6px 8px" }}>{h.destinationId} {h.destinationName || ""}</td>
-                  <td style={{ padding:"6px 8px" }}>{h.status}</td>
                   <td style={{ padding:"6px 8px" }}>
-                    <button className="border rounded px-2 py-1" onClick={()=>onEdit(h.id)} disabled={isConfirmed} title={isConfirmed ? "検収済みは編集できません" : "編集"}>編集</button>
+                    {h.status}
+                    {headerHasDiff[String(h.id)] ? "（差異あり）" : ""}
+                  </td>
+                  <td style={{ padding:"6px 8px" }}>
+                    {ownerType === "STORE" && (
+                      <button
+                        className="border rounded px-2 py-1 text-sm"
+                        onClick={() => onEdit(String(h.id))}
+                      >
+                        編集
+                      </button>
+                    )}
+                  {/* <button
+                    className="border rounded px-2 py-1"
+                    onClick={() => onEdit(String(h.id))}
+                    disabled={isCompleted}
+                    title={isCompleted ? "検収済みは編集できません" : "編集"}
+                  >
+                    編集
+                  </button> */}
                   </td>
                 </tr>
               );
             })}
-            {headers.length === 0 && <tr><td colSpan={6} style={{ color:"#64748b", padding:"8px" }}>データがありません。</td></tr>}
+            {filteredHeaders.length === 0 && <tr><td colSpan={6} style={{ color:"#64748b", padding:"8px" }}>データがありません。</td></tr>}
           </tbody>
         </table>
       </div>
+      <VendorModal
+        open={vendorModalOpen}
+        onClose={() => setVendorModalOpen(false)}
+        onSelect={(id) => {
+          setVendorId(id);
+          setVendorModalOpen(false);
+        }}
+      />
     </div>
   );
 }

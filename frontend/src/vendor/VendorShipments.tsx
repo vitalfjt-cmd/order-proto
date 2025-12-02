@@ -35,6 +35,15 @@ function formatYMD(d: Date): string {
   return `${y}-${m}-${dd}`;
 }
 
+function formatDateTimeLocal(d: Date): string {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const dd = String(d.getDate()).padStart(2, "0");
+  const hh = String(d.getHours()).padStart(2, "0");
+  const mi = String(d.getMinutes()).padStart(2, "0");
+  const ss = String(d.getSeconds()).padStart(2, "0");
+  return `${y}-${m}-${dd} ${hh}:${mi}:${ss}`;
+}
 
 export function VendorShipments({ onEdit }: { onEdit?: (id: string, vendorId?: string) => void }) {
   const [dateFrom, setDateFrom] = useState<string>(new Date().toISOString().slice(0,10));
@@ -54,6 +63,8 @@ export function VendorShipments({ onEdit }: { onEdit?: (id: string, vendorId?: s
 const [vendorModalOpen, setVendorModalOpen] = useState(false);
 const [vendors, setVendors] = useState<MasterVendor[]>([]);
 const [vendorFilter, setVendorFilter] = useState("");
+const [previewSummary, setPreviewSummary] = useState<string>("");
+const [generateSummary, setGenerateSummary] = useState<string>("");
 
 
 // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -129,30 +140,72 @@ async function doSearchWith(params: { dateFrom?: string; dateTo?: string; vendor
   }
 
 
-  async function handleConfirm(): Promise<void> {
-    const targets = headers.filter(h => selected[h.id] && h.status === "open");
-    const ids = targets.map(h => h.id);
-    if (ids.length === 0) { alert("確定対象（open）が選択されていません。"); return; }
+
+    async function handleConfirm(): Promise<void> {
+    // open のみを対象にする
+    const targets = headers.filter(
+      (h) => selected[h.id] && h.status === "open"
+    );
+    const ids = targets.map((h) => h.id);
+
+    // --- ログ: 選択状況 ---
+    console.log("[VendorShipments.handleConfirm] selected(open only) headers:", targets);
+    console.log("[VendorShipments.handleConfirm] ids to confirm:", ids);
+
+    if (ids.length === 0) {
+      alert("確定対象（open）が選択されていません。");
+      return;
+    }
     if (!confirm(`${ids.length}件の伝票を確定します。よろしいですか？`)) return;
 
-    await confirmShipments(ids);
+    try {
+      console.log("[VendorShipments.handleConfirm] call confirmShipments(ids)...");
+      await confirmShipments(ids);
+      console.log("[VendorShipments.handleConfirm] confirmShipments done.", { ids });
 
-    // ★ 1件ずつ記録
-    for (const h of targets) {
-      logEvent({
-        type: "shipment.confirm",
-        headerId: h.id,
-        vendorId: h.vendorId,
-        destinationId: h.destinationId,
-        destinationName: h.destinationName,
-        deliveryDate: h.deliveryDate,
-        memo: "一括確定",
+      // ★ 1件ずつ記録
+      for (const h of targets) {
+        logEvent({
+          type: "shipment.confirm",
+          headerId: h.id,
+          vendorId: h.vendorId,
+          destinationId: h.destinationId,
+          destinationName: h.destinationName,
+          deliveryDate: h.deliveryDate,
+          memo: "一括確定",
+        });
+      }
+
+      // --- ログ: ensureFromShipments に渡す情報を確認 ---
+      console.log("[VendorShipments.handleConfirm] ensureFromShipments args summary:", {
+        ids,
+        headerCount: headers.length,
+        lineCount: lines.length,
+        targetCount: targets.length,
+        // destinationId と id の対応を確認したいので簡易サマリを出す
+        headerDestinations: headers.map((h) => ({
+          id: h.id,
+          destinationId: h.destinationId,
+        })),
       });
-    }
 
-    await ensureFromShipments(headers, lines, ids);
-    await doSearch();
+      // 検品データの自動生成（出荷 → inspections）
+      console.log("[VendorShipments.handleConfirm] call ensureFromShipments(headers, lines, ids)...");
+      await ensureFromShipments(headers, lines, ids);
+      console.log("[VendorShipments.handleConfirm] ensureFromShipments finished.");
+
+      // 再検索
+      await doSearch();
+      console.log("[VendorShipments.handleConfirm] doSearch() finished. all done.");
+    } catch (e) {
+      console.error("[VendorShipments.handleConfirm] error during confirm/ensure:", e);
+      alert(
+        "出荷の確定または検品データの生成でエラーが発生しました。\n" +
+          "詳細はブラウザのコンソールログを確認してください。"
+      );
+    }
   }
+
 
   async function handleUnconfirm(): Promise<void> {
     // const ids = headers.filter(h => selected[h.id] && h.status === "confirmed").map(h => h.id);
@@ -228,10 +281,10 @@ async function doSearchWith(params: { dateFrom?: string; dateTo?: string; vendor
     <div className="p-4 space-y-3">
       <h1 className="text-xl font-bold">ベンダー出荷 - 受注一覧</h1>
       <div className="flex flex-wrap items-end gap-3">
-        <label>納品日(自)
+        <label>発注日(自)
           <input type="date" value={dateFrom} onChange={e=>setDateFrom(e.target.value)} className="border rounded px-2 py-1" />
         </label>
-        <label>納品日(至)
+        <label>発注日(至)
           <input type="date" value={dateTo} onChange={e=>setDateTo(e.target.value)} className="border rounded px-2 py-1" />
         </label>
         <label>ベンダー
@@ -278,67 +331,162 @@ async function doSearchWith(params: { dateFrom?: string; dateTo?: string; vendor
             setLines([]);
             setSelected({});
             setHighlightId(null);
+                // ★ 件数メッセージもクリア
+            setPreviewSummary("");
+            setGenerateSummary("");
           }}
           title="条件を本日単日にリセット"
         >
           検索条件リセット
         </button>
-         <button
-            type="button"
-            className="border rounded px-3 py-1"
-            onClick={async () => {
-              const payload = {
-                asOf: new Date().toISOString().slice(0,19).replace('T',' '),
-                from: dateFrom || undefined,
-                to: dateTo || undefined,
-                vendorId: vendorId ? ID.vendor(vendorId) : undefined,
-                destinationId: destinationId ? ID.store(destinationId) : undefined,
-                dryRun: false, // true にすると件数プレビューだけ
-              };
-              try {
-                const r = await generateShipments(payload);
-                alert(`出荷生成: ヘッダ ${r.createdHeaders ?? 0} 件 / 明細 ${r.upsertedLines ?? 0} 行`);
-                // alert(
-                //   `出荷生成: ヘッダ${r.headersAffected ?? r.countHeaders ?? 0}件 / 明細${r.linesAffected ?? r.countLines ?? 0}行`
-                // );
-                await doSearch(); // 直後に一覧を更新
-              } catch (e) {
-                alert('生成に失敗しました: ' + (e as Error).message);
-              }
-            }}
-            title="締切を過ぎた受注だけを、納品日 = 受注日 + LT で出荷に生成"
-          >
-            締切越え→出荷生成
-          </button>
-          <button
-            type="button"
-            className="border rounded px-3 py-1"
-            onClick={async () => {
-              const payload = {
-                asOf: new Date().toISOString().slice(0,19).replace('T',' '),
-                from: dateFrom || undefined,
-                to: dateTo || undefined,
-                vendorId: vendorId ? ID.vendor(vendorId) : undefined,
-                destinationId: destinationId ? ID.store(destinationId) : undefined,
-                dryRun: true,
-              };
-              try {
-                const r = await generateShipments(payload);
-                alert(`プレビュー: 生成ヘッダ ${r.preview?.headers ?? 0} / 明細 ${r.preview?.lines ?? 0}`);
-                // alert(
-                //   `生成プレビュー: ヘッダ${r.countHeaders ?? r.headersAffected ?? 0}件 / 明細${r.countLines ?? r.linesAffected ?? 0}行`
-                // );
-              } catch (e) {
-                alert('プレビューに失敗しました: ' + (e as Error).message);
-              }
-            }}
-            title="実際には作成せず、生成対象件数だけ確認"
-          >
-            生成プレビュー
-          </button>      
-      </div>
+        <button
+          type="button"
+          className="border rounded px-3 py-1"
+          onClick={async () => {
+            const now = new Date();
 
-      
+            const payload = {
+              asOf: formatDateTimeLocal(now),
+              from: dateFrom || undefined,       // 発注日 from
+              to: dateTo || undefined,           // 発注日 to
+              vendorId: vendorId ? ID.vendor(vendorId) : undefined,
+              destinationId: destinationId ? ID.store(destinationId) : undefined,
+              dryRun: false,
+            };
+
+            try {
+              const r = await generateShipments(payload);
+
+              if (!r || r.ok === false) {
+                setGenerateSummary(`出荷生成失敗: ${r?.error ?? "internal_error"}`);
+                return;
+              }
+
+              const headersAffected = r.headersAffected ?? r.countHeaders ?? 0;
+              const linesAffected = r.linesAffected ?? r.countLines ?? 0;
+              const createdHeaders = r.createdHeaders ?? 0;
+              const skippedHeaders = r.skippedHeaders ?? 0;
+              const skippedLines = r.skippedLines ?? 0;
+
+              let msg =
+                `対象ヘッダ ${headersAffected} 件 / 明細 ${linesAffected} 行` +
+                `（新規ヘッダ ${createdHeaders} 件）`;
+              if (skippedHeaders || skippedLines) {
+                msg += `／確定済みヘッダ ${skippedHeaders} 件 / 明細 ${skippedLines} 行はスキップ`;
+              }
+
+              setGenerateSummary(msg);
+
+              // ★ ここで一覧を最新状態にリロード
+              await doSearch();
+            } catch (e: unknown) {
+              console.error("generateShipments failed", e);
+              setGenerateSummary("出荷生成失敗: 通信エラー");
+            }
+          }}
+          // onClick={async () => {
+          //   const now = new Date();  // ★ これを追加
+          //   const payload = {
+          //     asOf: formatDateTimeLocal(now),  // ★ ローカル時刻の "YYYY-MM-DD HH:MM:SS"
+          //     from: dateFrom || undefined,
+          //     to: dateTo || undefined,
+          //     vendorId: vendorId ? ID.vendor(vendorId) : undefined,
+          //     destinationId: destinationId ? ID.store(destinationId) : undefined,
+          //     dryRun: false, // true にすると件数プレビューだけ
+          //   };
+          //   try {
+          //     const r = await generateShipments(payload);
+          //     if ((r.createdHeaders ?? 0) > 0) {
+          //       alert(
+          //         `出荷生成: 新規ヘッダ ${r.createdHeaders} 件 / 明細 ${r.upsertedLines ?? 0} 行（再計算を含む）`
+          //       );
+          //     } else {
+          //       alert(
+          //         `出荷再計算: 新規ヘッダ 0 件 / 明細 ${r.upsertedLines ?? 0} 行を更新しました（既存出荷の再計算）`
+          //       );
+          //     }
+          //     await doSearch(); // 直後に一覧を更新
+          //   } catch (e) {
+          //     alert('生成に失敗しました: ' + (e as Error).message);
+          //   }
+          // }}
+          title="締切を過ぎた受注だけを、納品日 = 受注日 + LT で出荷に生成"
+        >
+          締切越え→出荷生成
+        </button>
+        <button
+          type="button"
+          className="border rounded px-3 py-1"
+          onClick={async () => {
+            const now = new Date();
+
+            const payload = {
+              asOf: formatDateTimeLocal(now),
+              from: dateFrom || undefined,       // 発注日 from
+              to: dateTo || undefined,           // 発注日 to
+              vendorId: vendorId ? ID.vendor(vendorId) : undefined,
+              destinationId: destinationId ? ID.store(destinationId) : undefined,
+              dryRun: true,
+            };
+
+            try {
+              const r = await generateShipments(payload);
+
+              if (!r || r.ok === false) {
+                setPreviewSummary(`プレビュー失敗: ${r?.error ?? "internal_error"}`);
+                return;
+              }
+
+              const countHeaders = r.countHeaders ?? r.headersAffected ?? 0;
+              const countLines = r.countLines ?? r.linesAffected ?? 0;
+              const skippedHeaders = r.skippedHeaders ?? 0;
+              const skippedLines = r.skippedLines ?? 0;
+
+              let msg = `対象ヘッダ ${countHeaders} 件 / 明細 ${countLines} 行`;
+              if (skippedHeaders || skippedLines) {
+                msg += `（確定済みヘッダ ${skippedHeaders} 件 / 明細 ${skippedLines} 行は除外）`;
+              }
+
+              setPreviewSummary(msg);
+            } catch (e: unknown) {
+              console.error("generateShipments preview failed", e);
+              setPreviewSummary("プレビュー失敗: 通信エラー");
+            }
+          }}
+
+          // onClick={async () => {
+          //   const now = new Date();  // ★ これを追加
+          //   const payload = {
+          //     asOf: formatDateTimeLocal(now),
+          //     from: dateFrom || undefined,
+          //     to: dateTo || undefined,
+          //     vendorId: vendorId ? ID.vendor(vendorId) : undefined,
+          //     destinationId: destinationId ? ID.store(destinationId) : undefined,
+          //     dryRun: true,
+          //   };
+          //   try {
+          //     const r = await generateShipments(payload);
+          //     alert(`プレビュー: 生成ヘッダ ${r.preview?.headers ?? 0} / 明細 ${r.preview?.lines ?? 0}`);
+          //   } catch (e) {
+          //     alert('プレビューに失敗しました: ' + (e as Error).message);
+          //   }
+          // }}
+          title="実際には作成せず、生成対象件数だけ確認"
+        >
+          生成プレビュー
+        </button> 
+        {/* プレビュー・生成結果の表示 */}
+        {(previewSummary || generateSummary) && (
+          <div style={{ marginTop: 8, fontSize: "0.85rem", lineHeight: 1.5 }}>
+            {previewSummary && (
+              <div>【プレビュー】{previewSummary}</div>
+            )}
+            {generateSummary && (
+              <div>【出荷生成】{generateSummary}</div>
+            )}
+          </div>
+        )}     
+      </div>      
       <div className="flex items-center gap-4">
         <span>件数: <b>{totals.cnt}</b></span>
         <span>合計出荷数量: <b>{totals.qty}</b></span>
@@ -367,7 +515,7 @@ async function doSearchWith(params: { dateFrom?: string; dateTo?: string; vendor
             openPickingPrintWithStores(groups);
           }}
         >
-          ピッキングPDF（店舗内訳）
+         ピッキングPDF（品目×店舗）
         </button>
         <button className="border rounded px-3 py-1" onClick={handleCsv} disabled={headers.length===0}>ピッキングCSV</button>
         <button
@@ -438,6 +586,7 @@ async function doSearchWith(params: { dateFrom?: string; dateTo?: string; vendor
                 />
               </th>
               <th style={{ borderBottom: "1px solid #e2e8f0", padding: "6px 8px" }}>伝票番号</th>
+              <th style={{ borderBottom: "1px solid #e2e8f0", padding: "6px 8px" }}>発注日</th>
               <th style={{ borderBottom: "1px solid #e2e8f0", padding: "6px 8px" }}>納品日</th>
               <th style={{ borderBottom: "1px solid #e2e8f0", padding: "6px 8px" }}>ベンダー</th>
               <th style={{ borderBottom: "1px solid #e2e8f0", padding: "6px 8px" }}>納品先</th>
@@ -464,6 +613,7 @@ async function doSearchWith(params: { dateFrom?: string; dateTo?: string; vendor
                     />
                   </td>
                   <td style={{ padding: "6px 8px" }}>{h.id}</td>
+                  <td style={{ padding: "6px 8px" }}>{h.orderDate}</td>
                   <td style={{ padding: "6px 8px" }}>{h.deliveryDate}</td>
                   <td style={{ padding: "6px 8px" }}>{h.vendorName || h.vendorId}</td>
                   <td style={{ padding: "6px 8px" }}>{h.destinationName || h.destinationId}</td>
