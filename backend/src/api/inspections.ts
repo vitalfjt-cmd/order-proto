@@ -58,19 +58,25 @@ type InspectionLineRow = {
 };
 
 
-// ===== 検品一覧（簡易） =====
+// ===== 検品一覧（期間 From/To 対応版） =====
 inspections.get('/inspections', (req, res) => {
   try {
     // ownerType: 'STORE' | 'DC'
     const ownerTypeRaw =
       typeof req.query.ownerType === 'string' ? req.query.ownerType : 'STORE';
-    const ownerType = ownerTypeRaw.toUpperCase() === 'DC' ? 'DC' : 'STORE';
+    const ownerType: OwnerType =
+      ownerTypeRaw.toUpperCase() === 'DC' ? 'DC' : 'STORE';
 
-    // クエリから ownerId / vendorId を取得（空なら ''）
+    // クエリから ownerId / vendorId / 期間 From/To を取得
     const ownerIdRaw =
       typeof req.query.ownerId === 'string' ? req.query.ownerId : '';
     const vendorIdRaw =
       typeof req.query.vendorId === 'string' ? req.query.vendorId : '';
+
+    const fromRaw =
+      typeof req.query.from === 'string' ? req.query.from : '';
+    const toRaw =
+      typeof req.query.to === 'string' ? req.query.to : '';
 
     const where: string[] = [];
     const params: any = {};
@@ -106,6 +112,17 @@ inspections.get('/inspections', (req, res) => {
       // DC視点では owner_id では絞らない（全店舗分を対象）
     }
 
+    // 納品日（delivery_date）による期間絞り込み
+    // ※ 旧実装と同じく shipments.delivery_date ベースで揃えています
+    if (fromRaw) {
+      where.push('s.delivery_date >= @from');
+      params.from = fromRaw;
+    }
+    if (toRaw) {
+      where.push('s.delivery_date <= @to');
+      params.to = toRaw;
+    }
+
     const whereSql = where.length ? `WHERE ${where.join(' AND ')}` : '';
 
     // ===== ヘッダ =====
@@ -122,7 +139,7 @@ inspections.get('/inspections', (req, res) => {
           s.vendor_id        AS vendorId,
           s.destination_id   AS destinationId,
           s.destination_name AS destinationName,
-          i.delivery_date    AS deliveryDate
+          s.delivery_date    AS deliveryDate
         FROM inspections i
         JOIN shipments s ON s.id = i.shipment_id
         ${whereSql}
@@ -143,215 +160,65 @@ inspections.get('/inspections', (req, res) => {
         deliveryDate: r.deliveryDate,
       }));
 
-      const headerIds = headers.map((h) => h.id);
-      let lines: InspectionLineRow[] = [];
-      if (headerIds.length > 0) {
-        const inClause = headerIds.map((_, i) => `@id${i}`).join(',');
-        const lineParams: any = { ...params };
-        headerIds.forEach((id, i) => {
-          lineParams[`id${i}`] = id;
-        });
-
-        const rawLines = db
-          .prepare<InspectionLineRow, typeof lineParams>(
-            `
-            SELECT
-              l.id,
-              l.inspection_id AS inspectionId,
-              l.item_id       AS itemId,
-              l.ship_qty      AS shipQty,
-              l.inspected_qty AS inspectedQty,
-              l.diff_qty      AS diffQty,
-              l.unit          AS unit,
-              l.spec          AS spec,
-              l.temp_zone     AS tempZone,
-              l.lot_no        AS lotNo,
-              l.note          AS note,
-              it.name         AS itemName
-            FROM inspection_lines l
-            LEFT JOIN items it ON it.id = l.item_id
-            WHERE l.inspection_id IN (${inClause})
-            ORDER BY l.inspection_id, l.id
-            `
-          )
-          .all(lineParams);
-
-        lines = rawLines;
-      }
-
-      res.json({
-        headers,
-        lines: lines.map((r) => ({
-          id: r.id,
-          inspectionId: r.inspectionId,
-          itemId: r.itemId,
-          shipQty: r.shipQty,
-          inspectedQty: r.inspectedQty,
-          diffQty: r.diffQty,
-          unit: r.unit,
-          spec: r.spec,
-          tempZone: r.tempZone,
-          lotNo: r.lotNo,
-          note: r.note,
-          itemName: r.itemName,
-        })),
+    // ===== 明細 =====
+    const headerIds = headers.map((h) => h.id);
+    let lines: InspectionLineRow[] = [];
+    if (headerIds.length > 0) {
+      const inClause = headerIds.map((_, i) => `@id${i}`).join(',');
+      const lineParams: any = { ...params };
+      headerIds.forEach((id, i) => {
+        lineParams[`id${i}`] = id;
       });
 
-    // const headerIds = headers.map((h) => h.id);
-    // let lines: InspectionLineRow[] = [];
-    // if (headerIds.length > 0) {
-    //   const inClause = headerIds.map((_, i) => `@id${i}`).join(',');
-    //   const lineParams: any = { ...params };
-    //   headerIds.forEach((id, i) => {
-    //     lineParams[`id${i}`] = id;
-    //   });
+      const rawLines = db
+        .prepare<InspectionLineRow, typeof lineParams>(
+          `
+          SELECT
+            l.id,
+            l.inspection_id AS inspectionId,
+            l.item_id       AS itemId,
+            l.ship_qty      AS shipQty,
+            l.inspected_qty AS inspectedQty,
+            l.diff_qty      AS diffQty,
+            l.unit          AS unit,
+            l.spec          AS spec,
+            l.temp_zone     AS tempZone,
+            l.lot_no        AS lotNo,
+            l.note          AS note,
+            it.name         AS itemName
+          FROM inspection_lines l
+          LEFT JOIN items it ON it.id = l.item_id
+          WHERE l.inspection_id IN (${inClause})
+          ORDER BY l.inspection_id, l.id
+          `
+        )
+        .all(lineParams);
 
-    //   const rawLines = db
-    //     .prepare<InspectionLineRow, typeof lineParams>(
-    //       `
-    //       SELECT
-    //         l.id,
-    //         l.inspection_id AS inspectionId,
-    //         l.item_id       AS itemId,
-    //         l.ship_qty      AS shipQty,
-    //         l.inspected_qty AS inspectedQty,
-    //         l.diff_qty      AS diffQty
-    //       FROM inspection_lines l
-    //       WHERE l.inspection_id IN (${inClause})
-    //       ORDER BY l.inspection_id, l.id
-    //       `
-    //     )
-    //     .all(lineParams);
+      lines = rawLines;
+    }
 
-    //   lines = rawLines;
-    // }
-
-    // res.json({
-    //   headers,
-    //   lines: lines.map((r) => ({
-    //     id: r.id,
-    //     inspectionId: r.inspectionId,
-    //     itemId: r.itemId,
-    //     shipQty: r.shipQty,
-    //     inspectedQty: r.inspectedQty,
-    //     diffQty: r.diffQty,
-    //   })),
-    // });
+    res.json({
+      headers,
+      lines: lines.map((r) => ({
+        id: r.id,
+        inspectionId: r.inspectionId,
+        itemId: r.itemId,
+        shipQty: r.shipQty,
+        inspectedQty: r.inspectedQty,
+        diffQty: r.diffQty,
+        unit: r.unit,
+        spec: r.spec,
+        tempZone: r.tempZone,
+        lotNo: r.lotNo,
+        note: r.note,
+        itemName: r.itemName,
+      })),
+    });
   } catch (e) {
     console.error('[GET /inspections] failed', e);
     res.status(500).json({ error: String(e) });
   }
 });
-
-// inspections.get('/inspections', (req, res) => {
-//   try {
-//     const ownerIdRaw =
-//       typeof req.query.ownerId === 'string' ? req.query.ownerId : '';
-
-//     const ownerId = ownerIdRaw ? ID.store(ownerIdRaw) : '';
-
-//     const where: string[] = [];
-//     const params: any = {};
-
-//     if (ownerId) {
-//       where.push('i.owner_id = @ownerId');
-//       params.ownerId = ownerId;
-//     }
-
-//     // 納品日（from / to）
-//     const fromRaw =
-//       typeof req.query.from === 'string' ? req.query.from : '';
-//     const toRaw =
-//       typeof req.query.to === 'string' ? req.query.to : '';
-
-//     if (fromRaw) {
-//       where.push('s.delivery_date >= @from');
-//       params.from = fromRaw;
-//     }
-//     if (toRaw) {
-//       where.push('s.delivery_date <= @to');
-//       params.to = toRaw;
-//     }
-
-//     // ベンダーID（6桁ゼロ埋め）
-//     const vendorIdRaw =
-//       typeof req.query.vendorId === 'string' ? req.query.vendorId : '';
-//     const vendorId = vendorIdRaw ? ID.vendor(vendorIdRaw) : '';
-//     if (vendorId) {
-//       where.push('s.vendor_id = @vendorId');
-//       params.vendorId = vendorId;
-//     }
-
-//     const whereSql = where.length ? `WHERE ${where.join(' AND ')}` : '';
-
-//     const headers = db
-//       .prepare(
-//         `
-//         SELECT
-//           i.id,
-//           i.shipment_id      AS shipmentId,
-//           i.owner_id         AS ownerId,
-//           i.status,
-//           i.created_at       AS createdAt,
-//           i.updated_at       AS UpdatedAt,
-//           s.vendor_id        AS vendorId,
-//           s.destination_id   AS destinationId,
-//           s.destination_name AS destinationName,
-//           s.delivery_date    AS deliveryDate
-//         FROM inspections i
-//         JOIN shipments s ON s.id = i.shipment_id
-//         ${whereSql}
-//         ORDER BY s.delivery_date DESC, s.vendor_id, s.destination_id, i.id
-//         `
-//       )
-//       .all(params);
-
-//     // ★ ここがポイント：headers に紐づく inspection_lines だけ取得する
-//     let lines: any[] = [];
-
-//     if (headers.length > 0) {
-//       const headerIds = headers.map((h: any) => h.id);
-//       const placeholders = headerIds.map((_, idx) => `@id${idx}`).join(', ');
-//       const lineParams: any = {};
-//       headerIds.forEach((id, idx) => {
-//         lineParams[`id${idx}`] = id;
-//       });
-
-//       lines = db
-//         .prepare(
-//           `
-//           SELECT
-//             il.id,
-//             il.inspection_id   AS inspectionId,
-//             il.item_id         AS itemId,
-//             il.ship_qty        AS shipQty,
-//             il.inspected_qty   AS inspectedQty,
-//             il.diff_qty        AS diffQty,
-//             il.unit,
-//             il.spec,
-//             il.temp_zone       AS tempZone,
-//             il.lot_no          AS lotNo,
-//             il.note,
-//             il.created_at      AS createdAt,
-//             il.updated_at      AS UpdatedAt,
-//             it.name            AS itemName      -- ★ ここで品目名を取得
-//           FROM inspection_lines il
-//           LEFT JOIN items it
-//                  ON it.id = il.item_id         -- ★ items を JOIN
-//           WHERE il.inspection_id IN (${placeholders})
-//           ORDER BY il.inspection_id, il.item_id
-//           `
-//         )
-//         .all(lineParams);
-//     }
-
-//     res.json({ ok: true, headers, lines });
-//   } catch (e: any) {
-//     console.error('[/inspections] error:', e);
-//     res.status(500).json({ ok: false, error: String(e?.message ?? e) });
-//   }
-// });
-
 
 // ===== 出荷 → 検品データ生成 =====
 
@@ -819,3 +686,71 @@ inspections.post("/inspections/confirm", (req, res) => {
       .json({ ok: false, error: String(e?.message ?? e) });
   }
 });
+
+// ===== 検品 確定 =====
+// body: { ids: number[] }
+inspections.post("/inspections/confirm", (req, res) => {
+  try {
+    const ids: number[] = Array.isArray(req.body?.ids)
+      ? (req.body.ids as any[]).map((x) => Number(x))
+      : [];
+    const validIds = ids.filter((x) => Number.isFinite(x));
+
+    if (!validIds.length) {
+      return res.json({ updated: 0 });
+    }
+
+    const placeholders = validIds.map(() => "?").join(",");
+
+    const sql = `
+      UPDATE inspections
+         SET status = 'completed',
+             updated_at = datetime('now','localtime')
+       WHERE id IN (${placeholders})
+         AND status = 'open'
+    `;
+
+    const r = db.prepare(sql).run(...validIds);
+    res.json({ updated: r.changes ?? 0 });
+  } catch (e: any) {
+    console.error("[/inspections/confirm] error:", e);
+    res
+      .status(500)
+      .json({ ok: false, error: String(e?.message ?? e) });
+  }
+});
+
+
+// ===== 検品 監査（audited へ遷移） =====
+// body: { ids: number[] }
+inspections.post("/inspections/audit", (req, res) => {
+  try {
+    const ids: number[] = Array.isArray(req.body?.ids)
+      ? (req.body.ids as any[]).map((x) => Number(x))
+      : [];
+    const validIds = ids.filter((x) => Number.isFinite(x));
+
+    if (!validIds.length) {
+      return res.json({ updated: 0 });
+    }
+
+    const placeholders = validIds.map(() => "?").join(",");
+
+    const sql = `
+      UPDATE inspections
+         SET status = 'audited',
+             updated_at = datetime('now','localtime')
+       WHERE id IN (${placeholders})
+         AND status = 'completed'
+    `;
+
+    const r = db.prepare(sql).run(...validIds);
+    res.json({ updated: r.changes ?? 0 });
+  } catch (e: any) {
+    console.error("[/inspections/audit] error:", e);
+    res
+      .status(500)
+      .json({ ok: false, error: String(e?.message ?? e) });
+  }
+});
+

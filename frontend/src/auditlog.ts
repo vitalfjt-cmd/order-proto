@@ -5,7 +5,8 @@ export type AuditEventType =
   | "shipment.save"            // 出荷ヘッダ/明細の保存
   | "inspection.confirm"       // 検収（検品）確定
   | "inspection.unconfirm"     // 検収の取消（モック）
-  | "inspection.save";         // 検品内容の保存
+  | "inspection.save"          // 検品内容の保存
+  | "inspection.audit";        // 検品監査完了
 
 export interface AuditEvent {
   id: string;                  // UUID的な一意ID

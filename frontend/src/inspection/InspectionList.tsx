@@ -1,11 +1,11 @@
 // import React, { useMemo, useState } from "react";
 import React, { useEffect, useMemo, useState } from "react";
-import { searchInspections, confirmInspections } from "./inspectionApi";
+import { searchInspections, confirmInspections, auditInspections  } from "./inspectionApi";
 import type { OwnerType, InspectionHeader, InspectionLine } from "./inspectionApi";
 import { buildDiscrepancyCsv } from "./discrepancyCsv";
 import { downloadCsv } from "../utils/csv";
-import { buildSlipsFromInspections } from "../slips/slipsApi";
-import { buildSlipsCsv, openSlipsPrint } from "../slips/slipsCsvPdf";
+// import { buildSlipsFromInspections } from "../slips/slipsApi";
+// import { buildSlipsCsv, openSlipsPrint } from "../slips/slipsCsvPdf";
 import { logEvent } from "../auditlog";
 import { VendorModal } from "../components/VendorModal";
 
@@ -154,6 +154,39 @@ export function InspectionList({ ownerType, ownerId, onEdit, onBack }: Props) {
     await doSearch();
   }
 
+  // ★ DC向け：監査（completed → audited）
+async function handleAudit(): Promise<void> {
+  // 監査対象は completed のものだけ
+  const targets = headers.filter(
+    (h) => selected[h.id] && h.status === "completed"
+  );
+  const ids = targets.map((h) => h.id);
+
+  if (ids.length === 0) {
+    alert("監査対象（completed）が選択されていません。");
+    return;
+  }
+  if (!confirm(`${ids.length}件を監査済みにします。よろしいですか？`)) return;
+
+  await auditInspections(ids);
+
+  // ★ 各伝票ごとに監査ログを記録
+  for (const h of targets) {
+    logEvent({
+      type: "inspection.audit",
+      headerId: String(h.id),
+      ownerId: ownerId,            // DC側一覧の ownerId（例: DC01）
+      vendorId: h.vendorId,
+      destinationId: h.destinationId,
+      destinationName: h.destinationName,
+      deliveryDate: h.deliveryDate,
+      memo: "検品監査完了",
+    });
+  }
+
+  await doSearch();
+}
+
   const totals = useMemo<{
     cnt: number;
     ship: number;
@@ -203,8 +236,25 @@ export function InspectionList({ ownerType, ownerId, onEdit, onBack }: Props) {
       <h1 className="text-xl font-bold">検品一覧（{ownerType}:{ownerId}）</h1>
       <div className="flex flex-wrap items-end gap-3">
         {onBack && <button className="border rounded px-3 py-1" onClick={onBack}>← 戻る</button>}
-        <label>期間From <input type="date" value={from} onChange={(e)=>setFrom(e.target.value)} className="border rounded px-2 py-1"/></label>
-        <label>To <input type="date" value={to} onChange={(e)=>setTo(e.target.value)} className="border rounded px-2 py-1"/></label>
+        <label className="flex flex-col gap-1">
+          <span>納品日 From</span>
+          <input
+            type="date"
+            value={from}
+            onChange={(e) => setFrom(e.target.value)}
+            className="border rounded px-2 py-1"
+          />
+        </label>
+
+        <label className="flex flex-col gap-1">
+          <span>納品日 To</span>
+          <input
+            type="date"
+            value={to}
+            onChange={(e) => setTo(e.target.value)}
+            className="border rounded px-2 py-1"
+          />
+        </label>
         <div className="flex items-center gap-2">
         <label>
           ベンダーID
@@ -344,6 +394,18 @@ export function InspectionList({ ownerType, ownerId, onEdit, onBack }: Props) {
               選択を検収確定
             </button>
           )}  
+          
+          {ownerType === "DC" && (
+            <button
+              className="border rounded px-3 py-1"
+              onClick={handleAudit}
+              disabled={headers.every(
+                (h) => !(selected[h.id] && h.status === "completed")
+              )}
+            >
+              選択を監査済みに
+            </button>
+          )}
         </div>
       </div>
 

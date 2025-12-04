@@ -2,7 +2,7 @@ import React, { useEffect, useMemo, useState, Suspense } from "react";
 import { Input } from "@/components/ui/input";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Label } from "@/components/ui/label";
-import { ListOrdered, Truck, ClipboardCheck, History, Menu } from "lucide-react";
+import { ListOrdered, Truck, ClipboardCheck, History, Menu, Home  } from "lucide-react";
 import { motion } from "framer-motion";
 import { loadLatestDraftLike } from "./db";
 import { toCsvString, downloadCsv } from "./utils/csv";
@@ -21,6 +21,9 @@ const VendorEdit = React.lazy(() =>
 //   import("./inspection/VendorInspectionList").then(m => ({ default: m.VendorInspectionList }))
 // );
 const HistoryPage = React.lazy(() => import("./HistoryPage"));
+// ★ ここを追加
+const AuditView = React.lazy(() => import("./audit/AuditView"));
+
 // 店舗向け検品（/frontend/src/inspection 配下）
 const StoreInspectionList = React.lazy(() =>
   import("./inspection/InspectionList").then(m => ({ default: m.InspectionList }))
@@ -611,28 +614,6 @@ function OrderEntryPrototype() {
       }
     };
 
-
-  // function buildOrderCsvRows(
-  //   d: OrderDraft,
-  //   opts?: { includeHeader?: boolean }
-  // ): (string | number | null)[][] {
-  //   const withHeader = opts?.includeHeader ?? true;
-  //   const orderDate = d.requestDate;
-
-  //   const calcArrival = () => {
-  //     const lt = orderRule?.leadTimeDays ?? 0;
-  //     try {
-  //       const base = new Date(orderDate + "T00:00:00");
-  //       base.setDate(base.getDate() + lt);
-  //       const yyyy = base.getFullYear();
-  //       const mm = String(base.getMonth() + 1).padStart(2, "0");
-  //       const dd = String(base.getDate()).padStart(2, "0");
-  //       return `${yyyy}-${mm}-${dd}`;
-  //     } catch {
-  //       return d.expectedArrivalDate;
-  //     }
-  //   };
-
     // 名称の解決ヘルパ
     const getStoreName = () => serverStoreName || getStoreNameById(d.storeId);
     const getVendorName = (vendorId: string) =>
@@ -654,7 +635,6 @@ function OrderEntryPrototype() {
         const unitPrice = Number(d.lines.find(x => x.lineId === ln.lineId)?.unitPrice ?? 0);
         const amount = (ln.qty || 0) * unitPrice;
         const arrivalDate = calcArrival(ln);
-        // const arrivalDate = calcArrival();
 
         // 出力：店舗コード, 店舗名, ベンダーコード, ベンダー名, 発注日, 納品日, 品目コード, 品目名, 数量, 単価, 金額
         return [
@@ -997,22 +977,6 @@ function OrderEntryPrototype() {
                         return draft.requestDate;
                       }
                     })();
-                  // displayedLines.map((line) => {
-                  //   const item = itemsMap[line.itemId] || undefined;
-                  //   const unitPrice = line.unitPrice ?? 0;
-                  //   const amount = (line.qty || 0) * unitPrice;
-
-                  //   // ベンダーLTから納品予定日算出
-                  //   const lt = orderRule?.leadTimeDays ?? 0;
-                  //   const arrival = (() => {
-                  //     try {
-                  //       const d = new Date(draft.requestDate + "T00:00:00");
-                  //       d.setDate(d.getDate() + lt);
-                  //       return formatDateLocal(d);
-                  //     } catch {
-                  //       return draft.requestDate;
-                  //     }
-                  //   })();
 
                     // 数量入力ハンドラ
                     const onQtyChange = (v: string) => {
@@ -1130,7 +1094,6 @@ function OrderEntryPrototype() {
             <button
               className="border rounded px-3 py-1"
               onClick={handleCsvDownload}
-              // disabled={!draft.lines.some(l => (l.qty || 0) > 0)}
               disabled={!displayedLines.some(l => (l.qty || 0) > 0)}
             >
               CSVダウンロード
@@ -1226,16 +1189,18 @@ function OrderEntryPrototype() {
 // =========================
 
 type Route =
+  | 'home'
   | 'order'
   | 'shipments'
   | 'inspection'
   | 'vendorEdit'
   | 'history'
   | 'storeInspection'
-  | 'storeInspectionEdit';
+  | 'storeInspectionEdit'
+  | 'audit';
 
 export default function App() {
-  const [route, setRoute] = useState<Route>('order');
+  const [route, setRoute] = useState<Route>('home');
   const [editId, setEditId] = useState<string | null>(null);
   const [vendorIdForEdit, setVendorIdForEdit] = useState<string | null>(null);
   const [inspectEditId, setInspectEditId] = useState<string | null>(null);
@@ -1276,7 +1241,12 @@ export default function App() {
       else if (h.startsWith('#inspection/store')) setRoute('storeInspection');
       else if (h.startsWith('#inspection')) setRoute('inspection');
       else if (h.startsWith('#history')) setRoute('history');
-      else setRoute('order');
+      else if (h.startsWith('#audit')) setRoute('audit');
+      else if (h.startsWith('#home') || h === '' || h === '#') {
+        setRoute('home');              // ハッシュ無し or #home はホームへ
+      } else {
+        setRoute('order');             // 想定外は一応発注へ
+      }
     };
     window.addEventListener('hashchange', applyFromHash);
     applyFromHash();
@@ -1292,17 +1262,70 @@ export default function App() {
           <span className="font-semibold">業務メニュー</span>
         </div>
         <nav className="p-2 space-y-1 text-sm">
-          <NavItem icon={<ListOrdered size={16} />} label="発注入力" active={route==='order'} onClick={()=>{ setRoute('order'); location.hash = '#order'; }} />         
-          <NavItem icon={<Truck size={16} />} label="出荷" active={route==='shipments'} onClick={()=>{ setRoute('shipments'); location.hash = '#/vendor/shipments'; }} />
-          <NavItem icon={<ClipboardCheck size={16} />} label="検品（ベンダー）" active={route==='inspection'} onClick={()=>{ setRoute('inspection'); location.hash = '#inspection'; }} />
-          <NavItem icon={<ClipboardCheck size={16} />} label="検品（店舗）" active={route==='storeInspection'} onClick={()=>{ setRoute('storeInspection'); location.hash = `#inspection/store?ownerId=${encodeURIComponent(storeOwnerId)}`; }} />
-          <NavItem icon={<History size={16} />} label="履歴" active={route==='history'} onClick={()=>{ setRoute('history'); location.hash = '#history'; }} />
+          <NavItem
+            icon={<Home size={16} />}
+            label="ホーム"
+            active={route === 'home'}
+            onClick={() => {
+              // ルーティングの単一の真実を hash に寄せる
+              location.hash = '#home';
+            }}
+          />
+          <NavItem
+            icon={<ListOrdered size={16} />}
+            label="発注入力"
+            active={route==='order'}
+            onClick={() => { location.hash = '#order'; }}
+          />
+          <NavItem
+            icon={<Truck size={16} />}
+            label="出荷"
+            active={route==='shipments'}
+            onClick={() => { location.hash = '#/vendor/shipments'; }}
+          />
+          <NavItem
+            icon={<ClipboardCheck size={16} />}
+            label="検品（ベンダー）"
+            active={route==='inspection'}
+            onClick={() => { location.hash = '#inspection'; }}
+          />
+          <NavItem
+            icon={<ClipboardCheck size={16} />}
+            label="検品（店舗）"
+            active={route==='storeInspection'}
+            onClick={() => {
+              location.hash = `#inspection/store?ownerId=${encodeURIComponent(storeOwnerId)}`;
+            }}
+          />
+          <NavItem
+            icon={<History size={16} />}
+            label="履歴"
+            active={route==='history'}
+            onClick={() => { location.hash = '#history'; }}
+          />
+          <NavItem
+            icon={<History size={16} />}
+            label="監査ログ"
+            active={route==='audit'}
+            onClick={() => { location.hash = '#audit'; }}
+          />
         </nav>
       </aside>
 
       {/* Main */}
       <main className="flex-1 p-4">
         <Suspense fallback={<div className="p-6 text-slate-600">読み込み中...</div>}>
+          {route === 'home' && (
+            <HomeDashboard
+              businessDate={getTodayBusinessYmd()}
+              storeOwnerId={storeOwnerId}
+              onGoOrder={() => { location.hash = '#order'; }}
+              onGoShipments={() => { location.hash = '#/vendor/shipments'; }}
+              onGoStoreInspection={() => {
+                location.hash = `#inspection/store?ownerId=${encodeURIComponent(storeOwnerId)}`;
+              }}
+            />
+          )}
           {route === 'order' && <OrderEntryPrototype />}
           {route === 'shipments' && (
             <VendorShipments
@@ -1338,13 +1361,6 @@ export default function App() {
               }}
             />
           )}
-          {/* {route === 'inspection' && (
-            <VendorInspectionList 
-              dcId="DC01" 
-              onBack={() => navigate("/menu")}
-              onEdit={(headerId) => navigate(`/inspection/vendor/edit/${headerId}`)} 
-            />
-          )} */}
 
           {route === 'history' && <HistoryPage />}
 
@@ -1364,8 +1380,98 @@ export default function App() {
               ownerId={storeOwnerId}
             />
           )}
+
+          {route === 'audit' && <AuditView />} 
+
         </Suspense>
       </main>
+    </div>
+  );
+}
+
+// App コンポーネントの下あたり（NavItem の定義より上）に追加
+
+function HomeDashboard(props: {
+  businessDate: string;
+  storeOwnerId: string;
+  onGoOrder: () => void;
+  onGoShipments: () => void;
+  onGoStoreInspection: () => void;
+}) {
+  const { businessDate, storeOwnerId, onGoOrder, onGoShipments, onGoStoreInspection } = props;
+
+  return (
+    <div className="max-w-5xl mx-auto space-y-6">
+      <div>
+        <h1 className="text-2xl font-semibold">今日の業務</h1>
+        <p className="text-sm text-slate-600 mt-1">
+          営業日付：<span className="font-mono">{businessDate}</span>
+        </p>
+      </div>
+
+      <div className="grid gap-4 md:grid-cols-3">
+        {/* 今日の発注 */}
+        <Card className="shadow-sm">
+          <CardHeader className="pb-2 flex flex-row items-center justify-between">
+            <CardTitle className="text-base flex items-center gap-2">
+              <ListOrdered size={16} />
+              今日の発注
+            </CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-3 text-sm">
+            <p>営業日付 {businessDate} の発注画面を開きます。</p>
+            <button
+              type="button"
+              className="border rounded px-3 py-1 text-sm bg-blue-600 text-white"
+              onClick={onGoOrder}
+            >
+              発注入力へ
+            </button>
+          </CardContent>
+        </Card>
+
+        {/* 今日の入荷予定（出荷） */}
+        <Card className="shadow-sm">
+          <CardHeader className="pb-2 flex flex-row items-center justify-between">
+            <CardTitle className="text-base flex items-center gap-2">
+              <Truck size={16} />
+              今日の入荷予定
+            </CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-3 text-sm">
+            <p>ベンダー側の出荷一覧から、今日の納品分を確認します。</p>
+            <button
+              type="button"
+              className="border rounded px-3 py-1 text-sm bg-blue-600 text-white"
+              onClick={onGoShipments}
+            >
+              出荷一覧へ
+            </button>
+          </CardContent>
+        </Card>
+
+        {/* 今日の検品（店舗） */}
+        <Card className="shadow-sm">
+          <CardHeader className="pb-2 flex flex-row items-center justify-between">
+            <CardTitle className="text-base flex items-center gap-2">
+              <ClipboardCheck size={16} />
+              今日の検品（店舗）
+            </CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-3 text-sm">
+            <p>店舗 { /* 店舗IDをそのまま出しておく */ }
+              <span className="font-mono">{storeOwnerId}</span> の検品一覧を開きます。
+            </p>
+            <button
+              type="button"
+              className="border rounded px-3 py-1 text-sm bg-blue-600 text-white"
+              onClick={onGoStoreInspection}
+            >
+              店舗検品へ
+            </button>
+          </CardContent>
+        </Card>
+      </div>
     </div>
   );
 }

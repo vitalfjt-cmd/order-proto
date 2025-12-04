@@ -259,6 +259,29 @@ export async function confirmInspections(
   });
 }
 
+// ===== 検品 監査API =====
+
+/**
+ * 検品を「audited」にする。
+ * ids は number でも string でもOK。
+ * completed → audited への遷移のみを想定。
+ */
+export async function auditInspections(
+  ids: (string | number)[]
+): Promise<void> {
+  const bodyIds = ids
+    .map((x) => Number(x))
+    .filter((n) => Number.isFinite(n));
+
+  if (bodyIds.length === 0) {
+    return;
+  }
+
+  await getJson<{ updated: number }>("/inspections/audit", {
+    method: "POST",
+    body: JSON.stringify({ ids: bodyIds }),
+  });
+}
 
 // ===== 単票取得 =====
 
