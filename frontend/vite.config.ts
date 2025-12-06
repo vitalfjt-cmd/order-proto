@@ -23,6 +23,7 @@ export default defineConfig({
       '/stores':   { target: 'http://localhost:8080', changeOrigin: true },
       '/vendors':  { target: 'http://localhost:8080', changeOrigin: true },
       '/audit':  { target: 'http://localhost:8080', changeOrigin: true },
+      "/store/shipments": { target: "http://localhost:8080", changeOrigin: true },
     }
   },
 })

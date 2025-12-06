@@ -17,9 +17,7 @@ const VendorShipments = React.lazy(() =>
 const VendorEdit = React.lazy(() =>
   import("./vendor/VendorEdit").then(m => ({ default: m.VendorEdit }))
 );
-// const VendorInspectionList = React.lazy(() =>
-//   import("./inspection/VendorInspectionList").then(m => ({ default: m.VendorInspectionList }))
-// );
+
 const HistoryPage = React.lazy(() => import("./HistoryPage"));
 // ★ ここを追加
 const AuditView = React.lazy(() => import("./audit/AuditView"));
@@ -30,6 +28,16 @@ const StoreInspectionList = React.lazy(() =>
 );
 const StoreInspectionEdit = React.lazy(() =>
   import("./inspection/InspectionEdit").then(m => ({ default: m.InspectionEdit }))
+);
+
+// 店舗間移動・廃棄
+const StoreShipmentList = React.lazy(() =>
+  import("./store/StoreShipmentList")
+);
+
+// ★ 店舗間移動・廃棄 入力
+const StoreShipmentEdit = React.lazy(() =>
+  import("./store/StoreShipmentEdit").then(m => ({ default: m.StoreShipmentEdit }))
 );
 
 // =========================
@@ -1197,7 +1205,9 @@ type Route =
   | 'history'
   | 'storeInspection'
   | 'storeInspectionEdit'
-  | 'audit';
+  | 'audit'
+  | 'storeShipments'
+  | 'storeShipmentEdit';  
 
 export default function App() {
   const [route, setRoute] = useState<Route>('home');
@@ -1205,6 +1215,7 @@ export default function App() {
   const [vendorIdForEdit, setVendorIdForEdit] = useState<string | null>(null);
   const [inspectEditId, setInspectEditId] = useState<string | null>(null);
   const [storeOwnerId, setStoreOwnerId] = useState<string>("0002"); // 店舗検品の既定店舗ID
+  const [storeShipmentEditId, setStoreShipmentEditId] = useState<number | null>(null);
 
   // ハッシュ遷移（任意）：#order/#shipments/#inspection/#history/#inspection/store?ownerId=0001
   useEffect(() => {
@@ -1242,6 +1253,7 @@ export default function App() {
       else if (h.startsWith('#inspection')) setRoute('inspection');
       else if (h.startsWith('#history')) setRoute('history');
       else if (h.startsWith('#audit')) setRoute('audit');
+      else if (h.startsWith('#store/shipments')) setRoute('storeShipments');
       else if (h.startsWith('#home') || h === '' || h === '#') {
         setRoute('home');              // ハッシュ無し or #home はホームへ
       } else {
@@ -1295,6 +1307,15 @@ export default function App() {
             active={route==='storeInspection'}
             onClick={() => {
               location.hash = `#inspection/store?ownerId=${encodeURIComponent(storeOwnerId)}`;
+            }}
+          />
+          <NavItem
+            icon={<Truck size={16} />}
+            label="店舗出荷"
+            active={route === 'storeShipments'}
+            onClick={() => {
+              // hash を変えることで applyFromHash が route を 'storeShipments' にしてくれる
+              location.hash = '#store/shipments';
             }}
           />
           <NavItem
@@ -1380,6 +1401,36 @@ export default function App() {
               ownerId={storeOwnerId}
             />
           )}
+
+          {route === 'storeShipments' && (
+            <StoreShipmentList
+              storeId={storeOwnerId}
+              onCreate={() => {
+                setStoreShipmentEditId(null);
+                setRoute('storeShipmentEdit');
+              }}
+              onEdit={(id: number) => {
+                setStoreShipmentEditId(id);
+                setRoute('storeShipmentEdit');
+              }}
+            />
+          )}
+
+          {route === 'storeShipmentEdit' && (
+            <StoreShipmentEdit
+              storeId={storeOwnerId}
+              headerId={storeShipmentEditId}
+              onBack={() => {
+                setRoute('storeShipments');
+              }}
+            />
+          )}
+          {/* {route === 'storeShipments' && (
+            <StoreShipmentList
+              storeId={storeOwnerId}  // 既存の storeOwnerId をそのまま利用
+              // onCreate / onEdit は Step4 で実装するので、今は渡さなくてOK
+            />
+          )} */}
 
           {route === 'audit' && <AuditView />} 
 

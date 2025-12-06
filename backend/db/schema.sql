@@ -312,6 +312,30 @@ CREATE TABLE inspection_lines (
   FOREIGN KEY (inspection_id) REFERENCES inspections(id)
 );
 
+CREATE TABLE store_shipments (
+  id               INTEGER PRIMARY KEY AUTOINCREMENT,
+  shipment_no      TEXT,            -- 将来のための伝票番号（"STS-000001" など）
+  from_store_id    CHAR(4) NOT NULL, -- 出荷元店舗
+  to_store_id      CHAR(4),          -- 店間移動なら相手店舗、廃棄なら NULL
+  movement_type    TEXT NOT NULL,    -- 'TRANSFER' | 'DISPOSAL'
+  shipment_date    TEXT NOT NULL,    -- 営業日付ベース "YYYY-MM-DD"
+  status           TEXT NOT NULL,    -- 'draft' | 'confirmed'
+  memo             TEXT,
+  created_at       TEXT NOT NULL,
+  created_by       TEXT,
+  updated_at       TEXT NOT NULL,
+  updated_by       TEXT
+);
+
+CREATE TABLE store_shipment_lines (
+  id             INTEGER PRIMARY KEY AUTOINCREMENT,
+  header_id      INTEGER NOT NULL REFERENCES store_shipments(id) ON DELETE CASCADE,
+  line_no        INTEGER NOT NULL,
+  item_id        CHAR(6) NOT NULL,
+  qty            REAL NOT NULL,
+  unit           TEXT,
+  memo           TEXT
+);
 
 -- インデックス・トリガー類
 -- CREATE UNIQUE INDEX IF NOT EXISTS ux_shipment_lines_header_item
