@@ -337,6 +337,30 @@ CREATE TABLE store_shipment_lines (
   memo           TEXT
 );
 
+-- 店舗在庫の入出庫履歴
+CREATE TABLE store_stock_movements (
+  id             INTEGER PRIMARY KEY AUTOINCREMENT,
+  store_id       CHAR(4) NOT NULL,   -- 店舗ID（検品の owner_id / destination_id と対応）
+  item_id        CHAR(6) NOT NULL,   -- 品目ID
+  movement_date  TEXT NOT NULL,      -- "YYYY-MM-DD"（営業日ベース）
+  movement_type  TEXT NOT NULL,      -- 'RECEIPT' | 'SHIPMENT' | 'ADJUSTMENT' | 'COUNT'
+  qty            REAL NOT NULL,      -- 増減数量（受入なら＋、出荷なら− でもOKだが、まずは正数＋種別で運用でも可）
+  ref_type       TEXT,               -- 'inspection' | 'store_shipment' | 'stock_count' など
+  ref_id         INTEGER,            -- 紐づく inspections.id / store_shipments.id など
+  memo           TEXT,
+  created_at     TEXT NOT NULL,
+  created_by     TEXT,
+  updated_at     TEXT NOT NULL,
+  updated_by     TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_store_stock_movements_store_item_date
+  ON store_stock_movements (store_id, item_id, movement_date);
+
+CREATE INDEX IF NOT EXISTS idx_store_stock_movements_ref
+  ON store_stock_movements (ref_type, ref_id);
+
+
 -- インデックス・トリガー類
 -- CREATE UNIQUE INDEX IF NOT EXISTS ux_shipment_lines_header_item
 --   ON shipment_lines(shipment_id, item_id);
