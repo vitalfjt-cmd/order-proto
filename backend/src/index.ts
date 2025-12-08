@@ -7,6 +7,7 @@ import { shipments } from './api/shipments';
 import { inspections } from "./api/inspections";
 import { db } from './db';
 import { storeShipments } from './api/storeShipments';
+import { audit } from './api/audit';  
 
 
 const app = express();
@@ -19,6 +20,7 @@ app.use('/ordering', ordering);
 app.use('/', shipments); // /shipments/* と /vendor/shipments/* を内部で面倒見る
 app.use("/", inspections);      // ★ 追加（パスは /inspections ...）
 app.use('/', storeShipments);
+app.use('/audit', audit);
 // 追加
 // 店舗マスタ（発注画面 & 履歴用）
 // 役割: { stores: [{ id, code, name }, ...] } を返す

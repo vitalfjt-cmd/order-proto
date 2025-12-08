@@ -1,4 +1,5 @@
-// src/auditlog.ts
+// frontend/src/auditlog.ts
+
 export type AuditEventType =
   | "shipment.confirm"         // 出荷確定
   | "shipment.unconfirm"       // 出荷確定の取消（モック）
@@ -25,22 +26,26 @@ export interface AuditEvent {
   memo?: string | null;
 }
 
-const STORAGE_KEY = "AUDIT_LOG_V1";
+// ===== 共通ヘルパー（HTTP） =====
 
-function loadAll(): AuditEvent[] {
-  const raw = localStorage.getItem(STORAGE_KEY);
-  if (!raw) return [];
-  try { return JSON.parse(raw) as AuditEvent[]; } catch { return []; }
+async function getJson<T>(input: RequestInfo, init?: RequestInit): Promise<T> {
+  const res = await fetch(input, {
+    headers: { Accept: "application/json", ...(init?.headers ?? {}) },
+    credentials: "same-origin",
+    ...init,
+  });
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    throw new Error(`HTTP ${res.status}: ${text || res.statusText}`);
+  }
+  return (await res.json()) as T;
 }
 
-function saveAll(list: AuditEvent[]) {
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(list));
-}
-
+// UUID v4 もどき
 function uuid4(): string {
-  // 簡易UUID
-  return "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(/[xy]/g, c => {
-    const r = (Math.random()*16)|0, v = c === "x" ? r : (r&0x3)|0x8;
+  return "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(/[xy]/g, (c) => {
+    const r = (Math.random() * 16) | 0;
+    const v = c === "x" ? r : (r & 0x3) | 0x8;
     return v.toString(16);
   });
 }
@@ -51,8 +56,10 @@ export function currentActor(): string {
   return localStorage.getItem("CURRENT_ACTOR") || "user";
 }
 
-/** 1件追加 */
-export function logEvent(p: Omit<AuditEvent, "id" | "at" | "actor"> & { actor?: string }) {
+/** 1件追加（非同期だが await なしで呼んでもOK） */
+export function logEvent(
+  p: Omit<AuditEvent, "id" | "at" | "actor"> & { actor?: string }
+): void {
   const now = new Date().toISOString();
   const ev: AuditEvent = {
     id: uuid4(),
@@ -67,13 +74,20 @@ export function logEvent(p: Omit<AuditEvent, "id" | "at" | "actor"> & { actor?: 
     deliveryDate: p.deliveryDate ?? null,
     memo: p.memo ?? null,
   };
-  const all = loadAll();
-  all.push(ev);
-  saveAll(all);
+
+  // fire-and-forget でサーバーに送る
+  void getJson<{ ok: boolean }>("/audit/events", {
+    method: "POST",
+    body: JSON.stringify(ev),
+    headers: { "Content-Type": "application/json" },
+  }).catch((e) => {
+    console.error("[auditlog] failed to send event", e);
+  });
 }
 
-/** 絞り込み検索 */
-export function searchAudit(opts: {
+// ===== 検索 =====
+
+export type SearchAuditOptions = {
   dateFrom?: string;     // YYYY-MM-DD
   dateTo?: string;       // YYYY-MM-DD
   actor?: string;
@@ -81,25 +95,23 @@ export function searchAudit(opts: {
   headerId?: string;
   vendorId?: string;
   destinationId?: string;
-} = {}): AuditEvent[] {
-  const all = loadAll();
-  return all.filter(ev => {
-    if (opts.actor && ev.actor !== opts.actor) return false;
-    if (opts.type && ev.type !== opts.type) return false;
-    if (opts.headerId && ev.headerId !== opts.headerId) return false;
-    if (opts.vendorId && ev.vendorId !== opts.vendorId) return false;
-    if (opts.destinationId && ev.destinationId !== opts.destinationId) return false;
+};
 
-    if (opts.dateFrom || opts.dateTo) {
-      const d = ev.at.slice(0,10);
-      if (opts.dateFrom && d < opts.dateFrom) return false;
-      if (opts.dateTo && d > opts.dateTo) return false;
-    }
-    return true;
-  }).sort((a,b) => b.at.localeCompare(a.at)); // 新しい順
-}
+/** サーバー上の audit_logs を検索 */
+export async function searchAudit(
+  opts: SearchAuditOptions = {}
+): Promise<AuditEvent[]> {
+  const qs = new URLSearchParams();
+  if (opts.dateFrom) qs.set("dateFrom", opts.dateFrom);
+  if (opts.dateTo) qs.set("dateTo", opts.dateTo);
+  if (opts.actor) qs.set("actor", opts.actor);
+  if (opts.type) qs.set("type", opts.type);
+  if (opts.headerId) qs.set("headerId", opts.headerId);
+  if (opts.vendorId) qs.set("vendorId", opts.vendorId);
+  if (opts.destinationId) qs.set("destinationId", opts.destinationId);
 
-/** 全削除（運用中は使わない想定。テスト用） */
-export function clearAudit() {
-  localStorage.removeItem(STORAGE_KEY);
+  const url = qs.toString() ? `/audit/events?${qs.toString()}` : "/audit/events";
+  const list = await getJson<AuditEvent[]>(url);
+  // 念のためクライアント側でも新しい順に揃える
+  return list.sort((a, b) => b.at.localeCompare(a.at));
 }
