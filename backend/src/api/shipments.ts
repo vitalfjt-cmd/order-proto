@@ -841,7 +841,7 @@ function generateShipmentsInternal(
           OR
             CASE
               -- cutoff が「早朝（04:00 より前）」なら、翌日にずらす
-              WHEN COALESCE(cutoffHHmm, '23:59') < '04:00' THEN
+               WHEN COALESCE(cutoffHHmm, '23:59') <= '04:00' THEN
                 datetime(orderDate || ' ' || COALESCE(cutoffHHmm, '23:59'), '+1 day')
               -- それ以外（04:00 以降）は orderDate 当日の時刻として扱う
               ELSE
@@ -1062,6 +1062,7 @@ function generateShipmentsInternal(
             vendorId: r.vendorId,
             destinationId: r.storeId,
             deliveryDate: r.deliveryDate,
+            orderDate: r.orderDate,
           }) as { id: number; status?: string };
 
           headerId = h.id;

@@ -501,22 +501,47 @@ export type GenerateShipmentsResult = {
 };
 
 // サーバ生レスポンス用の補助型（any を避けるため）
+// type RawGenerateShipmentsResponse = {
+//   ok?: boolean;
+//   error?: string;
+//   nowHHmm?: string;
+
+//   // プレビュー用
+//   countHeaders?: number;
+//   countLines?: number;
+
+//   // 本生成用
+//   headersAffected?: number;
+//   linesAffected?: number;
+
+//   // ★ 新規追加
+//   headerIds?: Array<number | string>;
+// };
 type RawGenerateShipmentsResponse = {
   ok?: boolean;
   error?: string;
   nowHHmm?: string;
 
   // プレビュー用
-  countHeaders?: number;
-  countLines?: number;
+  countHeaders?: number;      // 対象ヘッダ数
+  countLines?: number;        // 対象明細数
 
   // 本生成用
-  headersAffected?: number;
-  linesAffected?: number;
+  headersAffected?: number;   // 対象ヘッダ数（既存 + 新規）
+  linesAffected?: number;     // 対象明細数
 
-  // ★ 新規追加
+  // 確定済みでスキップされた件数
+  skippedHeaders?: number;
+  skippedLines?: number;
+
+  // 新規ヘッダ / upsert 明細数（/generate のときだけ入る）
+  createdHeaders?: number;
+  upsertedLines?: number;
+
+  // 生成された shipment.id 一覧
   headerIds?: Array<number | string>;
 };
+
 
 type GenerateShipmentsPayload = {
   asOf?: string;
@@ -550,35 +575,98 @@ export async function generateShipments(
   }
 
   // ★ プレビュー呼び出し（/preview）
+  // if (params.dryRun) {
+  //   const headers = raw.countHeaders ?? raw.headersAffected ?? 0;
+  //   const lines = raw.countLines ?? raw.linesAffected ?? 0;
+
+  //   return {
+  //     ok: true,
+  //     createdHeaders: headers,
+  //     upsertedLines: lines,
+  //     preview: {
+  //       headers,
+  //       lines,
+  //     },
+  //   };
+  // }
+  // ★ プレビュー呼び出し（/preview）
   if (params.dryRun) {
-    const headers = raw.countHeaders ?? raw.headersAffected ?? 0;
-    const lines = raw.countLines ?? raw.linesAffected ?? 0;
+    const countHeaders = raw.countHeaders ?? raw.headersAffected ?? 0;
+    const countLines = raw.countLines ?? raw.linesAffected ?? 0;
+    const headersAffected = raw.headersAffected ?? countHeaders;
+    const linesAffected = raw.linesAffected ?? countLines;
+    const skippedHeaders = raw.skippedHeaders ?? 0;
+    const skippedLines = raw.skippedLines ?? 0;
 
     return {
       ok: true,
-      createdHeaders: headers,
-      upsertedLines: lines,
+      // プレビュー時は「created = 対象ヘッダ数」「upsertedLines = 対象明細数」とみなす
+      createdHeaders: raw.createdHeaders ?? countHeaders,
+      upsertedLines: raw.upsertedLines ?? countLines,
+
+      // 呼び出し元（VendorShipments）が見るフィールド一式
+      countHeaders,
+      countLines,
+      headersAffected,
+      linesAffected,
+      skippedHeaders,
+      skippedLines,
+
       preview: {
-        headers,
-        lines,
+        headers: countHeaders,
+        lines: countLines,
       },
     };
   }
 
  // ★ 本生成呼び出し（/generate）
-  const created = raw.headersAffected ?? raw.countHeaders ?? 0;
-  const lines = raw.linesAffected ?? raw.countLines ?? 0;
+  // const created = raw.headersAffected ?? raw.countHeaders ?? 0;
+  // const lines = raw.linesAffected ?? raw.countLines ?? 0;
+
+  // const generatedHeaderIds = Array.isArray(raw.headerIds)
+  //   ? raw.headerIds
+  //       .map((x) => String(x))
+  //       .filter((s) => s !== "")
+  //   : undefined;
+
+//   return {
+//     ok: true,
+//     createdHeaders: created,
+//     upsertedLines: lines,
+//     generatedHeaderIds,
+//   };
+  // ★ 本生成呼び出し（/generate）
+  const countHeaders = raw.countHeaders ?? raw.headersAffected ?? 0;
+  const countLines = raw.countLines ?? raw.linesAffected ?? 0;
+  const headersAffected = raw.headersAffected ?? countHeaders;
+  const linesAffected = raw.linesAffected ?? countLines;
+
+  const created = raw.createdHeaders ?? 0;          // 純粋な「新規ヘッダ数」
+  const upsertedLines = raw.upsertedLines ?? linesAffected;
+
+  const skippedHeaders = raw.skippedHeaders ?? 0;
+  const skippedLines = raw.skippedLines ?? 0;
 
   const generatedHeaderIds = Array.isArray(raw.headerIds)
-    ? raw.headerIds
-        .map((x) => String(x))
-        .filter((s) => s !== "")
+    ? raw.headerIds.map((x) => String(x)).filter((s) => s !== "")
     : undefined;
 
   return {
     ok: true,
+
+    // 既存フィールド
     createdHeaders: created,
-    upsertedLines: lines,
+    upsertedLines,
+
+    // VendorShipments から参照される追加フィールド
+    countHeaders,
+    countLines,
+    headersAffected,
+    linesAffected,
+    skippedHeaders,
+    skippedLines,
+
     generatedHeaderIds,
   };
+
 }
