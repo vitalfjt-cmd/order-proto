@@ -656,69 +656,137 @@ inspections.patch('/inspections/:id/lines', (req, res) => {
 
 // ===== 検品 確定 =====
 // body: { ids: number[] }
-inspections.post("/inspections/confirm", (req, res) => {
+inspections.post('/inspections/confirm', (req, res) => {
   try {
-    const ids: number[] = Array.isArray(req.body?.ids)
-      ? (req.body.ids as any[]).map((x) => Number(x))
-      : [];
-    const validIds = ids.filter((x) => Number.isFinite(x));
+    const rawIds: any[] = Array.isArray(req.body?.ids) ? req.body.ids : [];
+    // 数値化＋重複排除
+    const ids = Array.from(
+      new Set(
+        rawIds
+          .map((x) => Number(x))
+          .filter((n) => Number.isFinite(n) && n > 0)
+      )
+    );
 
-    if (!validIds.length) {
-      return res.json({ updated: 0 });
+    if (ids.length === 0) {
+      return res.json({ updated: 0, movements: 0 });
     }
 
-    const placeholders = validIds.map(() => "?").join(",");
+    const tx = db.transaction((targetIds: number[]) => {
+      if (targetIds.length === 0) {
+        return { updated: 0, movements: 0 };
+      }
 
-    const sql = `
-      UPDATE inspections
-         SET status = 'completed',
-             updated_at = datetime('now','localtime')
-       WHERE id IN (${placeholders})
-         AND status = 'open'
-    `;
+      const placeholders = targetIds.map(() => '?').join(',');
 
-    const r = db.prepare(sql).run(...validIds);
-    res.json({ updated: r.changes ?? 0 });
+      type MovementSourceRow = {
+        inspectionId: number;
+        storeId: string;
+        deliveryDate: string;
+        itemId: string;
+        inspectedQty: number;
+        stockConv: number;   // ★ 追加：在庫単位への変換係数
+      };
+
+
+      // 1. 対象検品＋明細を取得（open かつ inspected_qty > 0）
+      const srcRows = db
+        .prepare(
+          `
+          SELECT
+            i.id            AS inspectionId,
+            i.owner_id      AS storeId,
+            s.delivery_date AS deliveryDate,
+            l.item_id       AS itemId,
+            l.inspected_qty AS inspectedQty,
+            COALESCE(NULLIF(it.stock_conv, 0), 1.0) AS stockConv
+          FROM inspections i
+          JOIN shipments s        ON s.id = i.shipment_id
+          JOIN inspection_lines l ON l.inspection_id = i.id
+          JOIN items it           ON it.id = l.item_id
+          WHERE i.id IN (${placeholders})
+            AND i.status = 'open'
+            AND l.inspected_qty > 0
+          `
+        )
+        .all(...targetIds) as MovementSourceRow[];
+
+      // 2. 在庫履歴に入庫行を INSERT
+      const insMove = db.prepare(
+        `
+        INSERT INTO store_stock_movements (
+          store_id,
+          item_id,
+          movement_date,
+          movement_type,
+          qty,
+          ref_type,
+          ref_id,
+          memo,
+          created_at,
+          updated_at
+        )
+        VALUES (
+          @storeId,
+          @itemId,
+          @movementDate,
+          'RECEIPT',
+          @qty,
+          'inspection',
+          @refId,
+          NULL,
+          datetime('now','localtime'),
+          datetime('now','localtime')
+        )
+        `
+      );
+
+      let movements = 0;
+      for (const r of srcRows) {
+        const inspected = Number(r.inspectedQty ?? 0);
+        const conv      = Number(r.stockConv ?? 1);
+        const stockQty  = inspected * conv;
+
+        if (stockQty === 0) continue;  // 念のため 0 行はスキップ
+
+        insMove.run({
+          storeId: r.storeId,
+          itemId: r.itemId,
+          movementDate: r.deliveryDate,
+          movementType: 'RECEIPT',
+          qty: stockQty,               // 在庫単位で記録
+          refType: 'inspection',
+          refId: r.inspectionId,
+        });
+        movements++;
+      }
+
+      // 3. ヘッダステータスを open → completed に更新
+      const upd = db
+        .prepare(
+          `
+          UPDATE inspections
+             SET status     = 'completed',
+                 updated_at = datetime('now','localtime')
+           WHERE id IN (${placeholders})
+             AND status = 'open'
+          `
+        )
+        .run(...targetIds);
+
+      return { updated: upd.changes ?? 0, movements };
+    });
+
+    const result = tx(ids);
+    res.json(result);
   } catch (e: any) {
-    console.error("[/inspections/confirm] error:", e);
+    console.error('[/inspections/confirm] error:', e);
     res
       .status(500)
       .json({ ok: false, error: String(e?.message ?? e) });
   }
 });
 
-// ===== 検品 確定 =====
-// body: { ids: number[] }
-inspections.post("/inspections/confirm", (req, res) => {
-  try {
-    const ids: number[] = Array.isArray(req.body?.ids)
-      ? (req.body.ids as any[]).map((x) => Number(x))
-      : [];
-    const validIds = ids.filter((x) => Number.isFinite(x));
-
-    if (!validIds.length) {
-      return res.json({ updated: 0 });
-    }
-
-    const placeholders = validIds.map(() => "?").join(",");
-
-    const sql = `
-      UPDATE inspections
-         SET status = 'completed',
-             updated_at = datetime('now','localtime')
-       WHERE id IN (${placeholders})
-         AND status = 'open'
-    `;
-
-    const r = db.prepare(sql).run(...validIds);
-    res.json({ updated: r.changes ?? 0 });
-  } catch (e: any) {
-    console.error("[/inspections/confirm] error:", e);
-    res
-      .status(500)
-      .json({ ok: false, error: String(e?.message ?? e) });
-  }
-});
 
 
 // ===== 検品 監査（audited へ遷移） =====

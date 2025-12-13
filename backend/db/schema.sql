@@ -9,7 +9,9 @@ CREATE TABLE IF NOT EXISTS items (
   unit          TEXT NOT NULL,
   spec          TEXT,
   temp_zone     TEXT CHECK (temp_zone IN ('ambient','chilled','frozen')) NOT NULL DEFAULT 'ambient',
-  is_active     INTEGER NOT NULL DEFAULT 1
+  is_active     INTEGER NOT NULL DEFAULT 1,
+  stock_unit    TEXT, 
+  stock_conv    REAL NOT NULL DEFAULT 1
 );
 
 -- 価格（ベンダー×品目×期間）

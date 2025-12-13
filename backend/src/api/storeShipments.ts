@@ -351,19 +351,173 @@ storeShipments.post('/store/shipments/save', (req, res) => {
 // 確定: POST /store/shipments/confirm
 // ===================================
 storeShipments.post('/store/shipments/confirm', (req, res) => {
-  const ids: number[] = Array.isArray(req.body?.ids)
-    ? (req.body.ids as any[]).map(x => Number(x))
-    : [];
-  const validIds = ids.filter(x => Number.isFinite(x));
-  if (!validIds.length) return res.json({ updated: 0 });
+  try {
+    const rawIds: any[] = Array.isArray(req.body?.ids) ? req.body.ids : [];
 
-  const q = `
-    UPDATE store_shipments
-       SET status = 'confirmed',
-           updated_at = datetime('now','localtime')
-     WHERE id IN (${validIds.map(() => '?').join(',')})
-       AND status = 'draft'
-  `;
-  const r = db.prepare(q).run(...validIds);
-  res.json({ updated: r.changes });
+    // 数値化＋重複排除
+    const ids = Array.from(
+      new Set(
+        rawIds
+          .map((x) => Number(x))
+          .filter((n) => Number.isFinite(n) && n > 0)
+      )
+    );
+
+    if (ids.length === 0) {
+      return res.json({ updated: 0, movements: 0 });
+    }
+
+    // まず status = 'draft' のヘッダだけに絞る
+    const placeholdersFilter = ids.map(() => '?').join(',');
+    const targetRows = db
+      .prepare(
+        `
+        SELECT id
+          FROM store_shipments
+         WHERE id IN (${placeholdersFilter})
+           AND status = 'draft'
+        `
+      )
+      .all(...ids) as { id: number }[];
+
+    const targetIds = targetRows.map((r) => r.id);
+    if (targetIds.length === 0) {
+      return res.json({ updated: 0, movements: 0 });
+    }
+
+    const tx = db.transaction((shipIds: number[]) => {
+      if (shipIds.length === 0) {
+        return { updated: 0, movements: 0 };
+      }
+
+      const placeholders = shipIds.map(() => '?').join(',');
+
+      type MovementSourceRow = {
+        shipmentId: number;
+        fromStoreId: string;
+        toStoreId: string | null;
+        movementType: MovementType;
+        shipmentDate: string;
+        itemId: string;
+        qty: number;
+      };
+
+      // 1. 対象店舗出荷ヘッダ＋明細を取得
+      const srcRows = db
+        .prepare(
+          `
+          SELECT
+            h.id            AS shipmentId,
+            h.from_store_id AS fromStoreId,
+            h.to_store_id   AS toStoreId,
+            h.movement_type AS movementType,
+            h.shipment_date AS shipmentDate,
+            l.item_id       AS itemId,
+            l.qty           AS qty
+          FROM store_shipments h
+          JOIN store_shipment_lines l
+            ON l.header_id = h.id
+          WHERE h.id IN (${placeholders})
+          `
+        )
+        .all(...shipIds) as MovementSourceRow[];
+
+      // 2. 在庫履歴に入出庫行を INSERT
+      const insMove = db.prepare(
+        `
+        INSERT INTO store_stock_movements (
+          store_id,
+          item_id,
+          movement_date,
+          movement_type,
+          qty,
+          ref_type,
+          ref_id,
+          memo,
+          created_at,
+          updated_at
+        )
+        VALUES (
+          @storeId,
+          @itemId,
+          @movementDate,
+          @movementType,
+          @qty,
+          'store_shipment',
+          @refId,
+          NULL,
+          datetime('now','localtime'),
+          datetime('now','localtime')
+        )
+        `
+      );
+
+      let movements = 0;
+
+      for (const r of srcRows) {
+        // 出荷元店舗：常に「出庫」
+        insMove.run({
+          storeId: r.fromStoreId,
+          itemId: r.itemId,
+          movementDate: r.shipmentDate,
+          movementType: 'SHIPMENT',
+          qty: r.qty,
+          refId: r.shipmentId,
+        });
+        movements++;
+
+        // 店間移動（TRANSFER）の場合のみ、相手店舗に「入庫」
+        if (r.movementType === 'TRANSFER' && r.toStoreId) {
+          insMove.run({
+            storeId: r.toStoreId,
+            itemId: r.itemId,
+            movementDate: r.shipmentDate,
+            movementType: 'RECEIPT',
+            qty: r.qty,
+            refId: r.shipmentId,
+          });
+          movements++;
+        }
+        // movement_type === 'DISPOSAL' の場合は出荷元のみ（上の1本だけ）で OK
+      }
+
+      // 3. ヘッダステータスを draft → confirmed に更新
+      const upd = db
+        .prepare(
+          `
+          UPDATE store_shipments
+             SET status     = 'confirmed',
+                 updated_at = datetime('now','localtime')
+           WHERE id IN (${placeholders})
+             AND status = 'draft'
+          `
+        )
+        .run(...shipIds);
+
+      return { updated: upd.changes, movements };
+    });
+
+    const result = tx(targetIds);
+    res.json(result);
+  } catch (e: any) {
+    console.error('[/store/shipments/confirm] failed:', e);
+    res.status(500).json({ error: String(e?.message ?? e) });
+  }
 });
+// storeShipments.post('/store/shipments/confirm', (req, res) => {
+//   const ids: number[] = Array.isArray(req.body?.ids)
+//     ? (req.body.ids as any[]).map(x => Number(x))
+//     : [];
+//   const validIds = ids.filter(x => Number.isFinite(x));
+//   if (!validIds.length) return res.json({ updated: 0 });
+
+//   const q = `
+//     UPDATE store_shipments
+//        SET status = 'confirmed',
+//            updated_at = datetime('now','localtime')
+//      WHERE id IN (${validIds.map(() => '?').join(',')})
+//        AND status = 'draft'
+//   `;
+//   const r = db.prepare(q).run(...validIds);
+//   res.json({ updated: r.changes });
+// });

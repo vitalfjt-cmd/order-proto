@@ -7,7 +7,7 @@ import { motion } from "framer-motion";
 import { loadLatestDraftLike } from "./db";
 import { toCsvString, downloadCsv } from "./utils/csv";
 import { VendorInspectionList } from "./vendor/VendorInspectionList";
-
+import { StoreStockList } from "./store/StoreStockList";
 
 
 // 遅延ロード（必要時のみ読み込み）
@@ -38,6 +38,11 @@ const StoreShipmentList = React.lazy(() =>
 // ★ 店舗間移動・廃棄 入力
 const StoreShipmentEdit = React.lazy(() =>
   import("./store/StoreShipmentEdit").then(m => ({ default: m.StoreShipmentEdit }))
+);
+
+// ★ 月次在庫サマリ
+const StoreMonthlySummary = React.lazy(() =>
+  import("./store/StoreMonthlySummary").then(m => ({ default: m.StoreMonthlySummary }))
 );
 
 // =========================
@@ -1207,7 +1212,9 @@ type Route =
   | 'storeInspectionEdit'
   | 'audit'
   | 'storeShipments'
-  | 'storeShipmentEdit';  
+  | 'storeShipmentEdit'
+  | 'storeStocks'
+  | 'storeMonthlySummary'; 
 
 export default function App() {
   const [route, setRoute] = useState<Route>('home');
@@ -1253,7 +1260,25 @@ export default function App() {
       else if (h.startsWith('#inspection')) setRoute('inspection');
       else if (h.startsWith('#history')) setRoute('history');
       else if (h.startsWith('#audit')) setRoute('audit');
-      else if (h.startsWith('#store/shipments')) setRoute('storeShipments');
+      else if (
+        h.startsWith('#store/shipments') ||   // 旧形式
+        h.startsWith('#/store/shipments')     // 新形式
+      ) {
+        setRoute('storeShipments');
+      }
+      else if (
+        h.startsWith('#store/stocks') ||      // 旧形式
+        h.startsWith('#/store/stocks')        // 新形式
+      ) {
+        setRoute('storeStocks');
+      }
+      else if (
+        h.startsWith('#/store/monthly-summary') || 
+        h.startsWith('#store/monthly-summary')
+      ) {
+        setRoute('storeMonthlySummary');
+      }
+        
       else if (h.startsWith('#home') || h === '' || h === '#') {
         setRoute('home');              // ハッシュ無し or #home はホームへ
       } else {
@@ -1315,7 +1340,23 @@ export default function App() {
             active={route === 'storeShipments'}
             onClick={() => {
               // hash を変えることで applyFromHash が route を 'storeShipments' にしてくれる
-              location.hash = '#store/shipments';
+              location.hash = '#/store/shipments';
+            }}
+          />
+          <NavItem
+            icon={<Truck size={16} />}
+            label="店舗在庫"
+            active={route === 'storeStocks'}
+            onClick={() => {
+              location.hash = '#/store/stocks';
+            }}
+          />
+          <NavItem
+            icon={<ClipboardCheck size={16} />}
+            label="棚卸（月次）"
+            active={route === 'storeMonthlySummary'}
+            onClick={() => {
+              location.hash = '#/store/monthly-summary';   // ★追加
             }}
           />
           <NavItem
@@ -1425,14 +1466,16 @@ export default function App() {
               }}
             />
           )}
-          {/* {route === 'storeShipments' && (
-            <StoreShipmentList
-              storeId={storeOwnerId}  // 既存の storeOwnerId をそのまま利用
-              // onCreate / onEdit は Step4 で実装するので、今は渡さなくてOK
-            />
-          )} */}
 
           {route === 'audit' && <AuditView />} 
+
+          {route === 'storeStocks' && (
+            <StoreStockList />
+          )}
+
+          {route === 'storeMonthlySummary' && (
+            <StoreMonthlySummary defaultStoreId={storeOwnerId} />
+          )}
 
         </Suspense>
       </main>

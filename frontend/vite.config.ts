@@ -24,6 +24,7 @@ export default defineConfig({
       '/vendors':  { target: 'http://localhost:8080', changeOrigin: true },
       '/audit':  { target: 'http://localhost:8080', changeOrigin: true },
       "/store/shipments": { target: "http://localhost:8080", changeOrigin: true },
+      "/stocks": { target: "http://localhost:8080", changeOrigin: true },
     }
   },
 })
