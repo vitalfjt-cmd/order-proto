@@ -1222,6 +1222,7 @@ export default function App() {
   const [vendorIdForEdit, setVendorIdForEdit] = useState<string | null>(null);
   const [inspectEditId, setInspectEditId] = useState<string | null>(null);
   const [storeOwnerId, setStoreOwnerId] = useState<string>("0002"); // 店舗検品の既定店舗ID
+  const [storeShipmentsStoreId, setStoreShipmentsStoreId] = useState<string>("0002"); // 店舗出荷用
   const [storeShipmentEditId, setStoreShipmentEditId] = useState<number | null>(null);
 
   // ハッシュ遷移（任意）：#order/#shipments/#inspection/#history/#inspection/store?ownerId=0001
@@ -1233,7 +1234,10 @@ export default function App() {
       const h = (hashPath || '');
       const q = new URLSearchParams(queryStr || '');
       const ownerId = q.get('ownerId') || undefined;
-      if (ownerId) setStoreOwnerId(ownerId);
+      if (ownerId) {
+        setStoreOwnerId(ownerId);
+        setStoreShipmentsStoreId(ownerId);
+      }
 
       // 出荷（一覧／編集）を優先順で解釈（edit → 一覧 → 旧 #shipments）
       if (
@@ -1445,7 +1449,9 @@ export default function App() {
 
           {route === 'storeShipments' && (
             <StoreShipmentList
-              storeId={storeOwnerId}
+              // storeId={storeOwnerId}
+              storeId={storeShipmentsStoreId}
+              onChangeStoreId={(sid) => setStoreShipmentsStoreId(sid)}
               onCreate={() => {
                 setStoreShipmentEditId(null);
                 setRoute('storeShipmentEdit');
@@ -1459,7 +1465,7 @@ export default function App() {
 
           {route === 'storeShipmentEdit' && (
             <StoreShipmentEdit
-              storeId={storeOwnerId}
+              storeId={storeShipmentsStoreId}
               headerId={storeShipmentEditId}
               onBack={() => {
                 setRoute('storeShipments');

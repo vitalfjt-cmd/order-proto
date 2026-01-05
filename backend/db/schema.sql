@@ -309,7 +309,9 @@ CREATE TABLE inspection_lines (
   lot_no         TEXT,
   note           TEXT,
   created_at     TEXT NOT NULL DEFAULT (datetime('now','localtime')),
-  updated_at     TEXT NOT NULL DEFAULT (datetime('now','localtime')),
+  updated_at     TEXT NOT NULL DEFAULT (datetime('now','localtime')), 
+  unit_price     REAL NOT NULL DEFAULT 0, 
+  amount         REAL NOT NULL DEFAULT 0,
   UNIQUE(inspection_id, item_id),
   FOREIGN KEY (inspection_id) REFERENCES inspections(id)
 );
@@ -336,7 +338,9 @@ CREATE TABLE store_shipment_lines (
   item_id        CHAR(6) NOT NULL,
   qty            REAL NOT NULL,
   unit           TEXT,
-  memo           TEXT
+  memo           TEXT,
+  unit_cost      REAL NOT NULL DEFAULT 0, 
+  amount         REAL NOT NULL DEFAULT 0
 );
 
 -- 店舗在庫の入出庫履歴
@@ -353,7 +357,15 @@ CREATE TABLE store_stock_movements (
   created_at     TEXT NOT NULL,
   created_by     TEXT,
   updated_at     TEXT NOT NULL,
-  updated_by     TEXT
+  updated_by     TEXT,
+  unit_cost      REAL, 
+  amount         REAL
+);
+
+CREATE TABLE IF NOT EXISTS stock_valuation_settings (
+  store_id   TEXT PRIMARY KEY,
+  method     TEXT NOT NULL CHECK (method IN ('TOTAL_AVG', 'MOVING_AVG')),
+  updated_at TEXT NOT NULL
 );
 
 CREATE INDEX IF NOT EXISTS idx_store_stock_movements_store_item_date

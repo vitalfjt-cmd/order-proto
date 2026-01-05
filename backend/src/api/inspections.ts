@@ -353,6 +353,7 @@ inspections.post('/inspections/generate-from-shipments', (req, res) => {
         SELECT
           item_id   AS itemId,
           ship_qty  AS shipQty,
+          unit_price AS unitPrice,
           unit,
           spec,
           temp_zone AS tempZone,
@@ -375,7 +376,9 @@ inspections.post('/inspections/generate-from-shipments', (req, res) => {
           spec,
           temp_zone,
           lot_no,
-          note
+          note,
+          unit_price,
+          amount
         )
         VALUES (
           @inspectionId,
@@ -387,7 +390,9 @@ inspections.post('/inspections/generate-from-shipments', (req, res) => {
           @spec,
           @tempZone,
           @lotNo,
-          @note
+          @note,
+          @unitPrice,
+          @amount
         )
         ON CONFLICT(inspection_id, item_id) DO UPDATE SET
           ship_qty   = excluded.ship_qty,
@@ -397,6 +402,8 @@ inspections.post('/inspections/generate-from-shipments', (req, res) => {
           temp_zone  = excluded.temp_zone,
           lot_no     = excluded.lot_no,
           note       = excluded.note,
+          unit_price = excluded.unit_price,
+          amount     = (inspection_lines.inspected_qty * excluded.unit_price),
           updated_at = datetime('now','localtime')
         `
       );
@@ -442,24 +449,35 @@ inspections.post('/inspections/generate-from-shipments', (req, res) => {
           tempZone: string | null;
           lotNo: string | null;
           note: string | null;
+          // 追加 ここから
+          unitPrice: number;
+          // 追加 ここまで
         }[];
-
+ 
         for (const ln of lines) {
           const shipQty = Number(ln.shipQty ?? 0);
-          const inspectedQty = shipQty;
-          const diffQty = 0;
-
+          // const inspectedQty = shipQty;
+          // const diffQty = 0;
+          // 追加 ここから
+          const unitPrice = Number(ln.unitPrice ?? 0);
+          const inspectedQty = Number(ln.shipQty ?? 0); // 生成時は出荷数を初期値にする想定
+          const amount = inspectedQty * unitPrice;
+          // 追加 ここまで
           const r2 = upsertInspectionLine.run({
             inspectionId,
             itemId: ln.itemId,
-            shipQty,
+            shipQty: ln.shipQty,
             inspectedQty,
-            diffQty,
+            // diffQty: inspectedQty - Number(ln.shipQty ?? 0), // 生成時は 0 のはず
+            diffQty: 0,
             unit: ln.unit ?? null,
             spec: ln.spec ?? null,
             tempZone: ln.tempZone ?? null,
             lotNo: ln.lotNo ?? null,
             note: ln.note ?? null,
+            // 単価、金額を追加
+            unitPrice,  
+            amount,         
           });
 
           if (r2.changes && r2.changes > 0) {
@@ -602,6 +620,7 @@ inspections.patch('/inspections/:id/lines', (req, res) => {
         SET
           inspected_qty = @inspectedQty,
           diff_qty      = @inspectedQty - ship_qty,
+          amount        = @inspectedQty * unit_price,
           lot_no        = @lotNo,
           note          = @note,
           updated_at    = datetime('now','localtime')
@@ -677,7 +696,8 @@ inspections.post('/inspections/confirm', (req, res) => {
         return { updated: 0, movements: 0 };
       }
 
-      const placeholders = targetIds.map(() => '?').join(',');
+    const placeholders = targetIds.map(() => '?').join(',');
+
 
       type MovementSourceRow = {
         inspectionId: number;
@@ -686,20 +706,20 @@ inspections.post('/inspections/confirm', (req, res) => {
         itemId: string;
         inspectedQty: number;
         stockConv: number;   // ★ 追加：在庫単位への変換係数
+        unitPrice: number;   // ★ 追加：発注単位あたり単価（shipment_lines.unit_price）
       };
 
-
-      // 1. 対象検品＋明細を取得（open かつ inspected_qty > 0）
       const srcRows = db
-        .prepare(
-          `
-          SELECT
+              .prepare(
+         `
+           SELECT
             i.id            AS inspectionId,
             i.owner_id      AS storeId,
             s.delivery_date AS deliveryDate,
             l.item_id       AS itemId,
             l.inspected_qty AS inspectedQty,
-            COALESCE(NULLIF(it.stock_conv, 0), 1.0) AS stockConv
+            COALESCE(NULLIF(it.stock_conv, 0), 1.0) AS stockConv,
+            l.unit_price                            AS unitPrice
           FROM inspections i
           JOIN shipments s        ON s.id = i.shipment_id
           JOIN inspection_lines l ON l.inspection_id = i.id
@@ -711,7 +731,6 @@ inspections.post('/inspections/confirm', (req, res) => {
         )
         .all(...targetIds) as MovementSourceRow[];
 
-      // 2. 在庫履歴に入庫行を INSERT
       const insMove = db.prepare(
         `
         INSERT INTO store_stock_movements (
@@ -723,6 +742,8 @@ inspections.post('/inspections/confirm', (req, res) => {
           ref_type,
           ref_id,
           memo,
+          unit_cost,
+          amount,
           created_at,
           updated_at
         )
@@ -735,11 +756,32 @@ inspections.post('/inspections/confirm', (req, res) => {
           'inspection',
           @refId,
           NULL,
+          @unitCost,
+          @amount,
           datetime('now','localtime'),
           datetime('now','localtime')
         )
         `
       );
+
+      // 0円はOK。NULL/空/非数のみNG
+      const missing = srcRows.filter(r => {
+        const v: any = (r as any).unitPrice;
+        if (v === null || v === undefined || v === "") return true;
+        return !Number.isFinite(Number(v));
+      });
+      if (missing.length > 0) {
+        // どの検品ID・品目が原因か返す（フロントで表示できる）
+        const items = Array.from(new Set(missing.map(m => m.itemId))).sort();
+        const inspections = Array.from(new Set(missing.map(m => m.inspectionId))).sort((a,b)=>a-b);
+        return res.status(409).json({
+          ok: false,
+          error: "unit_price_missing",
+          message: "単価未登録の品目があるため、検品確定できません（item_prices を登録してください）。",
+          itemIds: items,
+          inspectionIds: inspections,
+        });
+      }
 
       let movements = 0;
       for (const r of srcRows) {
@@ -749,14 +791,18 @@ inspections.post('/inspections/confirm', (req, res) => {
 
         if (stockQty === 0) continue;  // 念のため 0 行はスキップ
 
+        const unitPrice = Number(r.unitPrice ?? 0);   // inspection_lines.unit_price
+        const unitCost  = unitPrice / conv;           // 在庫単位単価
+        const amount    = stockQty * unitCost;        // = inspected * unitPrice
+
         insMove.run({
           storeId: r.storeId,
           itemId: r.itemId,
           movementDate: r.deliveryDate,
-          movementType: 'RECEIPT',
           qty: stockQty,               // 在庫単位で記録
-          refType: 'inspection',
           refId: r.inspectionId,
+          unitCost,
+          amount,
         });
         movements++;
       }

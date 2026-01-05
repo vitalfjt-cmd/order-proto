@@ -71,14 +71,43 @@ const [generateSummary, setGenerateSummary] = useState<string>("");
 useEffect(() => { seedDemoIfEmpty(); initFromQueryAndSearch(); }, []);
 
 useEffect(() => { if (vendorModalOpen && vendors.length === 0) { (async () => setVendors(await listVendors()))(); } }, [vendorModalOpen]);
+
 async function doSearch() {
-   await doSearchWith({
-   dateFrom, dateTo,
-   vendorId: vendorId ? ID.vendor(vendorId) : undefined,
-   destinationId: destinationId ? ID.store(destinationId) : undefined,
-   headerId: searchHeaderId || undefined,
- });
+  const df = dateFrom || "";
+  const dt = dateTo || "";
+  const vid = vendorId ? ID.vendor(vendorId) : "";
+  const did = destinationId ? ID.store(destinationId) : "";
+  const hid = (searchHeaderId || "").trim();
+
+  // ★検索条件を保存（戻り遷移で使う）
+  sessionStorage.setItem("shipments.dateFrom", df);
+  sessionStorage.setItem("shipments.dateTo", dt);
+  sessionStorage.setItem("shipments.vendorId", vid);
+  sessionStorage.setItem("shipments.destinationId", did);
+  sessionStorage.setItem("shipments.headerId", hid);
+  sessionStorage.setItem("shipments.lastSearch", "1");
+
+  // ★URL も同条件にしておく（リロード/戻りで復元できる）
+  const q = new URLSearchParams();
+  if (df) q.set("dateFrom", df);
+  if (dt) q.set("dateTo", dt);
+  if (vid) q.set("vendorId", vid);
+  if (did) q.set("destinationId", did);
+  if (hid) q.set("headerId", hid);
+
+  const base = location.hash.split("?")[0] || "#/vendor/shipments";
+  const qs = q.toString();
+  history.replaceState(null, "", qs ? `${base}?${qs}` : base);
+
+  await doSearchWith({
+    dateFrom: df,
+    dateTo: dt,
+    vendorId: vid || undefined,
+    destinationId: did || undefined,
+    headerId: hid || undefined,
+  });
 }
+
 useEffect(() => {
   if (!vendorModalOpen || vendors.length > 0) return;
   (async () => { setVendors(await listVendors()); })();
@@ -234,28 +263,26 @@ async function doSearchWith(params: { dateFrom?: string; dateTo?: string; vendor
   async function initFromQueryAndSearch(): Promise<void> {
     const q = new URLSearchParams((location.hash.split("?")[1] || ""));
 
-    // ★ クエリが1つでもあれば「戻り遷移／リンクからの復元」とみなす
-    const hasQuery = Array.from(q.keys()).length > 0;
+    const lastSearch = sessionStorage.getItem("shipments.lastSearch") === "1";
+    const hasQuery = Array.from(q.keys()).length > 0 || lastSearch;
 
-    let df = q.get("dateFrom") || q.get("deliveryDate") || "";
-    let dt = q.get("dateTo")   || q.get("deliveryDate") || "";
+    // クエリ優先 → 無ければ sessionStorage
+    let df = q.get("dateFrom") || q.get("deliveryDate") || sessionStorage.getItem("shipments.dateFrom") || "";
+    let dt = q.get("dateTo")   || q.get("deliveryDate") || sessionStorage.getItem("shipments.dateTo")   || "";
+    const vidRaw = q.get("vendorId") || sessionStorage.getItem("shipments.vendorId") || vendorId || "";
+    const didRaw = q.get("destinationId") || sessionStorage.getItem("shipments.destinationId") || destinationId || "";
+    const hid = q.get("headerId") || sessionStorage.getItem("shipments.headerId") || "";
 
-    // クエリ無しなら「今日〜今日」をデフォルト表示にするが、まだ検索はしない
     if (!df && !dt) {
       const today = formatYMD(new Date());
-      df = today;
-      dt = today;
+      df = today; dt = today;
     } else {
       if (!df) df = dt;
       if (!dt) dt = df;
     }
 
-    const vidRaw = q.get("vendorId") || vendorId || sessionStorage.getItem("shipments.vendorId") || "";
-    const vid  = vidRaw ? ID.vendor(vidRaw) : "";
-    const did  = q.get("destinationId") || destinationId || "";
-    const vid6 = vid ? ID.vendor(vid) : "";
-    const did4 = did ? ID.store(did) : "";
-    const hid  = q.get("headerId") || "";
+    const vid6 = vidRaw ? ID.vendor(vidRaw) : "";
+    const did4 = didRaw ? ID.store(didRaw) : "";
 
     if (df   !== dateFrom)       setDateFrom(df);
     if (dt   !== dateTo)         setDateTo(dt);
@@ -264,18 +291,12 @@ async function doSearchWith(params: { dateFrom?: string; dateTo?: string; vendor
     if (hid  !== searchHeaderId) setSearchHeaderId(hid);
 
     if (!hasQuery) {
-      // ★ 初期表示：条件だけセットして、リストは空のまま
-      setHeaders([]);
-      setLines([]);
-      setSelected({});
-      setHighlightId(null);
+      setHeaders([]); setLines([]); setSelected({}); setHighlightId(null);
       return;
     }
 
-    // ★ クエリがある場合だけ、自動検索してあげる（従来どおり）
     await doSearchWith({ dateFrom: df, dateTo: dt, vendorId: vid6, destinationId: did4, headerId: hid });
   }
-
 
   return (
     <div className="p-4 space-y-3">
@@ -384,32 +405,6 @@ async function doSearchWith(params: { dateFrom?: string; dateTo?: string; vendor
               setGenerateSummary("出荷生成失敗: 通信エラー");
             }
           }}
-          // onClick={async () => {
-          //   const now = new Date();  // ★ これを追加
-          //   const payload = {
-          //     asOf: formatDateTimeLocal(now),  // ★ ローカル時刻の "YYYY-MM-DD HH:MM:SS"
-          //     from: dateFrom || undefined,
-          //     to: dateTo || undefined,
-          //     vendorId: vendorId ? ID.vendor(vendorId) : undefined,
-          //     destinationId: destinationId ? ID.store(destinationId) : undefined,
-          //     dryRun: false, // true にすると件数プレビューだけ
-          //   };
-          //   try {
-          //     const r = await generateShipments(payload);
-          //     if ((r.createdHeaders ?? 0) > 0) {
-          //       alert(
-          //         `出荷生成: 新規ヘッダ ${r.createdHeaders} 件 / 明細 ${r.upsertedLines ?? 0} 行（再計算を含む）`
-          //       );
-          //     } else {
-          //       alert(
-          //         `出荷再計算: 新規ヘッダ 0 件 / 明細 ${r.upsertedLines ?? 0} 行を更新しました（既存出荷の再計算）`
-          //       );
-          //     }
-          //     await doSearch(); // 直後に一覧を更新
-          //   } catch (e) {
-          //     alert('生成に失敗しました: ' + (e as Error).message);
-          //   }
-          // }}
           title="締切を過ぎた受注だけを、納品日 = 受注日 + LT で出荷に生成"
         >
           締切越え→出荷生成
@@ -441,10 +436,37 @@ async function doSearchWith(params: { dateFrom?: string; dateTo?: string; vendor
               const countLines = r.countLines ?? r.linesAffected ?? 0;
               const skippedHeaders = r.skippedHeaders ?? 0;
               const skippedLines = r.skippedLines ?? 0;
+              const reasons = r.reasons;
 
               let msg = `対象ヘッダ ${countHeaders} 件 / 明細 ${countLines} 行`;
-              if (skippedHeaders || skippedLines) {
-                msg += `（確定済みヘッダ ${skippedHeaders} 件 / 明細 ${skippedLines} 行は除外）`;
+
+              if (countHeaders === 0 && countLines === 0) {
+                msg = "発注なし";
+
+                const hints: string[] = [];
+                if ((reasons?.totalBaseLines ?? 0) === 0) {
+                  hints.push("対象期間に受注がありません");
+                } else {
+                  if ((reasons?.excludedNotOrderable ?? 0) > 0) {
+                    hints.push(`発注不可曜日（override含む）: ${reasons?.excludedNotOrderable} 行`);
+                  }
+                  if ((reasons?.excludedBeforeCutoff ?? 0) > 0) {
+                    hints.push(`締め前: ${reasons?.excludedBeforeCutoff} 行`);
+                  }
+                  if ((reasons?.missingUnitPrice ?? 0) > 0) {
+                    hints.push(`単価未設定: ${reasons?.missingUnitPrice} 行`);
+                  }
+                  if ((reasons?.missingCutoffHHmm ?? 0) > 0) {
+                    hints.push(`締め時刻未設定: ${reasons?.missingCutoffHHmm} 行`);
+                  }
+                }
+
+                if (hints.length) msg += `（${hints.join(" / ")}）`;
+              } else {
+                // 従来のスキップ表示（未使用warning回避）
+                if (skippedHeaders || skippedLines) {
+                  msg += `（確定済みヘッダ ${skippedHeaders} 件 / 明細 ${skippedLines} 行は除外）`;
+                }
               }
 
               setPreviewSummary(msg);
@@ -453,24 +475,6 @@ async function doSearchWith(params: { dateFrom?: string; dateTo?: string; vendor
               setPreviewSummary("プレビュー失敗: 通信エラー");
             }
           }}
-
-          // onClick={async () => {
-          //   const now = new Date();  // ★ これを追加
-          //   const payload = {
-          //     asOf: formatDateTimeLocal(now),
-          //     from: dateFrom || undefined,
-          //     to: dateTo || undefined,
-          //     vendorId: vendorId ? ID.vendor(vendorId) : undefined,
-          //     destinationId: destinationId ? ID.store(destinationId) : undefined,
-          //     dryRun: true,
-          //   };
-          //   try {
-          //     const r = await generateShipments(payload);
-          //     alert(`プレビュー: 生成ヘッダ ${r.preview?.headers ?? 0} / 明細 ${r.preview?.lines ?? 0}`);
-          //   } catch (e) {
-          //     alert('プレビューに失敗しました: ' + (e as Error).message);
-          //   }
-          // }}
           title="実際には作成せず、生成対象件数だけ確認"
         >
           生成プレビュー

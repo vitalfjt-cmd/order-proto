@@ -29,7 +29,91 @@ type StoreShipmentLineRow = {
   qty: number;
   unit: string | null;
   memo: string | null;
+  unit_cost: number; // 追加
+  amount: number;    // 追加
 };
+
+// ===================================
+// 移動可能品目（在庫>0のもの）: GET /store/shipments/movable-items
+//   ?storeId=0002&q=0010 (qは任意: 品目ID前方 or 名称部分一致)
+// ===================================
+storeShipments.get("/store/shipments/movable-items", (req, res) => {
+  try {
+    const storeId = req.query.storeId ? ID.store(String(req.query.storeId)) : "";
+    if (!storeId) return res.status(400).json({ ok: false, error: "storeId is required" });
+
+    const qRaw = typeof req.query.q === "string" ? req.query.q.trim() : "";
+    const limit = Math.min(Math.max(Number(req.query.limit ?? 50) || 50, 1), 200);
+
+    // 検索条件（無ければ全件）
+    // - 数字っぽいなら品目ID前方一致も効かせる
+    const q = qRaw.replace(/[%_]/g, ""); // LIKEエスケープ簡易
+    const idLike = q ? `${q.replace(/\D/g, "")}%` : "";
+    const nameLike = q ? `%${q}%` : "";
+
+    const where: string[] = [
+      "it.is_active = 1",
+      "b.on_hand > 0",
+    ];
+    const params: any = { storeId, limit };
+
+    if (q) {
+      where.push("(it.id LIKE @idLike OR it.name LIKE @nameLike)");
+      params.idLike = idLike || "%";     // 数字が空なら全許容
+      params.nameLike = nameLike;
+    }
+
+    // on_hand は「在庫単位 qty」を前提（あなたの現仕様）
+    // ※ movement_typeの符号は最小で：SHIPMENTだけマイナス、それ以外はプラス扱い
+    const sql = `
+      WITH bal AS (
+        SELECT
+          item_id,
+          SUM(
+            CASE
+              WHEN movement_type = 'SHIPMENT' THEN -qty
+              WHEN movement_type IN ('RECEIPT','ADJUSTMENT') THEN qty
+              ELSE 0
+            END
+          ) AS on_hand
+        FROM store_stock_movements
+        WHERE store_id = @storeId
+        GROUP BY item_id
+      )
+      SELECT
+        it.id AS itemId,
+        it.name AS itemName,
+        it.unit AS unit,
+        it.stock_unit AS stockUnit,
+        it.stock_conv AS stockConv,
+        b.on_hand AS onHandQty
+      FROM bal b
+      JOIN items it ON it.id = b.item_id
+      WHERE ${where.join(" AND ")}
+      ORDER BY it.id
+      LIMIT @limit
+    `;
+
+    const rows = db.prepare(sql).all(params) as any[];
+
+    res.json({
+      ok: true,
+      storeId,
+      q: qRaw || null,
+      items: rows.map((r) => ({
+        itemId: r.itemId,
+        itemName: r.itemName,
+        onHandQty: Number(r.onHandQty ?? 0),
+        unit: r.unit ?? null,
+        stockUnit: r.stockUnit ?? null,
+        stockConv: Number(r.stockConv ?? 1) || 1,
+      })),
+    });
+  } catch (e: any) {
+    console.error("[GET /store/shipments/movable-items] error", e);
+    res.status(500).json({ ok: false, error: String(e?.message ?? e) });
+  }
+});
 
 // ==============================
 // 一覧取得: GET /store/shipments
@@ -47,6 +131,14 @@ storeShipments.get('/store/shipments', (req, res) => {
 
   const where: string[] = ['from_store_id = @storeId'];
   const params: any = { storeId };
+
+  const slipNoRaw = String(req.query.slipNo || "").trim();
+  const slipNo = slipNoRaw.replace(/\D/g, "");
+  if (slipNo) {
+    // 伝票番号（id）の部分一致検索（例: "12" → id に "12" を含むもの）
+    where.push("CAST(id AS TEXT) LIKE @slipNo");
+    params.slipNo = `%${slipNo}%`;
+  }
 
   if (df) {
     where.push('shipment_date >= @df');
@@ -133,18 +225,40 @@ storeShipments.get('/store/shipments/:id', (req, res) => {
   const lines = db.prepare(
     `
       SELECT
-        id,
-        header_id,
-        line_no,
-        item_id,
-        qty,
-        unit,
-        memo
-      FROM store_shipment_lines
-      WHERE header_id = ?
-      ORDER BY line_no ASC, id ASC
+        l.id,
+        l.header_id,
+        l.line_no,
+        l.item_id,
+        l.qty,
+        l.unit,
+        l.memo,
+        l.unit_cost,
+        l.amount,
+        i.name AS item_name
+      FROM store_shipment_lines l
+      LEFT JOIN items i ON i.id = l.item_id
+      WHERE l.header_id = ?
+      ORDER BY l.line_no ASC, l.id ASC
     `
-  ).all(header.id) as StoreShipmentLineRow[];
+  ).all(header.id) as any[];
+
+  // const lines = db.prepare(
+  //   `
+  //     SELECT
+  //       id,
+  //       header_id,
+  //       line_no,
+  //       item_id,
+  //       qty,
+  //       unit,
+  //       memo,
+  //       unit_cost,
+  //       amount
+  //     FROM store_shipment_lines
+  //     WHERE header_id = ?
+  //     ORDER BY line_no ASC, id ASC
+  //   `
+  // ).all(header.id) as StoreShipmentLineRow[];
 
   res.json({
     header: {
@@ -162,9 +276,12 @@ storeShipments.get('/store/shipments/:id', (req, res) => {
       id: l.id,
       lineNo: l.line_no,
       itemId: l.item_id,
+      itemName: l.item_name ?? null,   // ★追加
       qty: l.qty,
       unit: l.unit ?? null,
       memo: l.memo ?? null,
+      unitCost: Number(l.unit_cost ?? 0),
+      amount: Number(l.amount ?? 0),
     })),
   });
 });
@@ -299,6 +416,70 @@ storeShipments.post('/store/shipments/save', (req, res) => {
 
       headerId = Number(hr.lastInsertRowid);
     }
+    // 追加 ここから
+    // 明細登録の直前に追加
+    const itemIds = Array.from(new Set(lines.map(l => l.itemId)));
+    const placeholders2 = itemIds.map(() => "?").join(",");
+
+    // itemごとに「最新の unit_cost」を取る（SQLite古めでも動く版）
+    const latestCosts = db.prepare(
+      `
+      SELECT m1.item_id AS itemId, m1.unit_cost AS unitCost
+      FROM store_stock_movements m1
+      WHERE m1.store_id = ?
+        AND m1.item_id IN (${placeholders2})
+        AND m1.unit_cost IS NOT NULL
+        AND m1.id = (
+          SELECT m2.id
+          FROM store_stock_movements m2
+          WHERE m2.store_id = m1.store_id
+            AND m2.item_id = m1.item_id
+            AND m2.unit_cost IS NOT NULL
+          ORDER BY m2.movement_date DESC, m2.id DESC
+          LIMIT 1
+        )
+      `
+    ).all(fromStoreId, ...itemIds) as { itemId: string; unitCost: number }[];
+
+    const costMap = new Map(latestCosts.map(r => [String(r.itemId), Number(r.unitCost)]));
+
+    // unit_cost が取れない品目は 409（= 入庫が無いので移動不可）
+    // ★ 0円は意図的にあり得るので「<=0」では弾かない。存在しない/非数だけ弾く。
+    const missing = itemIds.filter((id) => {
+      if (!costMap.has(id)) return true; // ← これが一番大事（履歴が無い）
+      const v = costMap.get(id);
+      return v === null || v === undefined || !Number.isFinite(Number(v));
+    });
+
+    if (missing.length > 0) {
+      const err: any = new Error("unit_cost_missing");
+      err.status = 409;
+      err.body = {
+        ok: false,
+        error: "unit_cost_missing",
+        message:
+          "入庫（単価履歴）が無い品目があるため、店舗移動を保存できません。先に入庫を作ってください。",
+        itemIds: missing.sort(),
+        fromStoreId,
+      };
+      throw err;
+    }
+    // unit_cost が取れない品目は 409（= 入庫が無いので移動不可）
+    // const missing = itemIds.filter(id => !Number.isFinite(costMap.get(id) as any) || Number(costMap.get(id)) <= 0);
+    // if (missing.length > 0) {
+    //   // better-sqlite3 tx を中断させるため throw
+    //   const err: any = new Error("unit_cost_missing");
+    //   err.status = 409;
+    //   err.body = {
+    //     ok: false,
+    //     error: "unit_cost_missing",
+    //     message: "入庫（単価履歴）が無い品目があるため、店舗移動を保存できません。先に入庫を作ってください。",
+    //     itemIds: missing.sort(),
+    //     fromStoreId,
+    //   };
+    //   throw err;
+    // }
+    // 追加 ここまで
 
     // 明細登録
     const insLine = db.prepare(
@@ -309,7 +490,9 @@ storeShipments.post('/store/shipments/save', (req, res) => {
           item_id,
           qty,
           unit,
-          memo
+          memo,
+          unit_cost,
+          amount
         )
         VALUES (
           @headerId,
@@ -317,12 +500,17 @@ storeShipments.post('/store/shipments/save', (req, res) => {
           @itemId,
           @qty,
           @unit,
-          @memo
+          @memo,
+          @unitCost,
+          @amount
         )
       `
     );
 
     lines.forEach((ln, idx) => {
+      const unitCost = Number(costMap.get(ln.itemId)); // 0 も許容
+      const amount = Number(ln.qty) * unitCost;
+
       insLine.run({
         headerId,
         lineNo: idx + 1,
@@ -330,8 +518,25 @@ storeShipments.post('/store/shipments/save', (req, res) => {
         qty: ln.qty,
         unit: ln.unit,
         memo: ln.memo,
+        unitCost,
+        amount,
       });
     });
+    // lines.forEach((ln, idx) => {
+    //   const unitCost = Number(costMap.get(ln.itemId) ?? 0);
+    //   const amount = Number(ln.qty) * unitCost; // qty は在庫単位前提
+
+    //   insLine.run({
+    //     headerId,
+    //     lineNo: idx + 1,
+    //     itemId: ln.itemId,
+    //     qty: ln.qty,
+    //     unit: ln.unit,
+    //     memo: ln.memo,
+    //     unitCost,
+    //     amount,
+    //   });
+    // });
 
     return headerId;
   });
@@ -340,6 +545,9 @@ storeShipments.post('/store/shipments/save', (req, res) => {
   try {
     newId = tx() as number;
   } catch (e: any) {
+    if (e?.status === 409 && e?.body) {
+    return res.status(409).json(e.body);
+    }
     console.error('[store_shipments/save] failed', e);
     return res.status(500).json({ error: 'failed to save store shipment' });
   }
@@ -400,6 +608,8 @@ storeShipments.post('/store/shipments/confirm', (req, res) => {
         shipmentDate: string;
         itemId: string;
         qty: number;
+        unitCost: number | null;
+        amount: number | null;
       };
 
       // 1. 対象店舗出荷ヘッダ＋明細を取得
@@ -413,7 +623,9 @@ storeShipments.post('/store/shipments/confirm', (req, res) => {
             h.movement_type AS movementType,
             h.shipment_date AS shipmentDate,
             l.item_id       AS itemId,
-            l.qty           AS qty
+            l.qty           AS qty,
+            l.unit_cost     AS unitCost,
+            l.amount        AS amount
           FROM store_shipments h
           JOIN store_shipment_lines l
             ON l.header_id = h.id
@@ -421,6 +633,33 @@ storeShipments.post('/store/shipments/confirm', (req, res) => {
           `
         )
         .all(...shipIds) as MovementSourceRow[];
+
+      // 追加 ここから
+      // ★ 保険：NULL/非数だけ弾く（0円は意図的にあり得るので弾かない）
+      const missing = srcRows.filter((r) => {
+        const uc = r.unitCost;
+        const am = r.amount;
+        return (
+          uc === null ||
+          uc === undefined ||
+          !Number.isFinite(Number(uc)) ||
+          am === null ||
+          am === undefined ||
+          !Number.isFinite(Number(am))
+        );
+      });
+
+      if (missing.length > 0) {
+        const items = Array.from(new Set(missing.map((m) => m.itemId))).sort();
+        return res.status(409).json({
+          ok: false,
+          error: "unit_cost_missing",
+          message:
+            "単価/金額が欠損している明細があるため、確定できません。いったん保存し直すか、先に入庫を作ってください。",
+          itemIds: items,
+        });
+      }     
+      // 追加 ここまで
 
       // 2. 在庫履歴に入出庫行を INSERT
       const insMove = db.prepare(
@@ -434,6 +673,8 @@ storeShipments.post('/store/shipments/confirm', (req, res) => {
           ref_type,
           ref_id,
           memo,
+          unit_cost,
+          amount,
           created_at,
           updated_at
         )
@@ -446,6 +687,8 @@ storeShipments.post('/store/shipments/confirm', (req, res) => {
           'store_shipment',
           @refId,
           NULL,
+          @unitCost,
+          @amount,
           datetime('now','localtime'),
           datetime('now','localtime')
         )
@@ -463,6 +706,8 @@ storeShipments.post('/store/shipments/confirm', (req, res) => {
           movementType: 'SHIPMENT',
           qty: r.qty,
           refId: r.shipmentId,
+          unitCost: r.unitCost,
+          amount: r.amount,
         });
         movements++;
 
@@ -475,6 +720,8 @@ storeShipments.post('/store/shipments/confirm', (req, res) => {
             movementType: 'RECEIPT',
             qty: r.qty,
             refId: r.shipmentId,
+            unitCost: r.unitCost,
+            amount: r.amount,
           });
           movements++;
         }
@@ -504,20 +751,3 @@ storeShipments.post('/store/shipments/confirm', (req, res) => {
     res.status(500).json({ error: String(e?.message ?? e) });
   }
 });
-// storeShipments.post('/store/shipments/confirm', (req, res) => {
-//   const ids: number[] = Array.isArray(req.body?.ids)
-//     ? (req.body.ids as any[]).map(x => Number(x))
-//     : [];
-//   const validIds = ids.filter(x => Number.isFinite(x));
-//   if (!validIds.length) return res.json({ updated: 0 });
-
-//   const q = `
-//     UPDATE store_shipments
-//        SET status = 'confirmed',
-//            updated_at = datetime('now','localtime')
-//      WHERE id IN (${validIds.map(() => '?').join(',')})
-//        AND status = 'draft'
-//   `;
-//   const r = db.prepare(q).run(...validIds);
-//   res.json({ updated: r.changes });
-// });

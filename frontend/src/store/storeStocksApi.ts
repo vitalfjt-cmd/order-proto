@@ -43,3 +43,20 @@ export async function searchStoreStocks(params: {
     error: json.error,
   };
 }
+
+export type ValuationMethod = "TOTAL_AVG" | "MOVING_AVG";
+
+export async function getValuationSettings(storeId: string): Promise<{ storeId: string; method: ValuationMethod }> {
+  const r = await fetch(`/stocks/valuation-settings?storeId=${encodeURIComponent(storeId)}`);
+  if (!r.ok) throw new Error("failed to get valuation settings");
+  return await r.json();
+}
+
+export async function setValuationSettings(storeId: string, method: ValuationMethod): Promise<void> {
+  const r = await fetch(`/stocks/valuation-settings`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ storeId, method }),
+  });
+  if (!r.ok) throw new Error("failed to set valuation settings");
+}

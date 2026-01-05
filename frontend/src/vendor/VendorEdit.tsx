@@ -1,9 +1,18 @@
 import React, { useEffect, useMemo, useState } from "react";
-import type { VendorOrderLine, VendorOrderHeader, TempZone, MasterItem } from "./apiVendor";
-import { logEvent } from "../auditlog";
-import { getShipment, replaceLines, updateShipmentHeader, createShipment, listItems, listStores, deleteLine, listVendorItems } from "./apiVendor";
-import { listVendors } from "./apiVendor";
-import type { MasterStore, MasterVendor } from "./apiVendor";
+import type { VendorOrderLine, VendorOrderHeader, TempZone, MasterItem, MasterStore, MasterVendor } from "./apiVendor";
+
+import {
+  getShipment,
+  listItems,
+  listStores,
+  deleteLine,
+  listVendorItems,
+  createShipment,
+  updateShipmentHeader,
+  replaceLines,
+  isApiHttpError,
+  listVendors
+} from "./apiVendor";
 
 
 // ID 正規化（ゼロ埋め固定長）
@@ -41,9 +50,8 @@ export function VendorEdit({ headerId, onBack, initialVendorId }: Props) {
   const [vendorFilter, setVendorFilter] = useState('');
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
   const [vendorModalOpen, setVendorModalOpen] = useState(false);
-
-  // 「どの行に反映するか」を覚える
   const [activeRow, setActiveRow] = useState<number | null>(null);
+  const [saving, setSaving] = useState(false);
 
   // 初期ロード（品目・納品先マスタ）
   useEffect(() => { (async () => {
@@ -59,15 +67,13 @@ export function VendorEdit({ headerId, onBack, initialVendorId }: Props) {
 
 
   // ルータから来ない場合に備え、ハッシュからも拾う保険
-  const headerIdFromHash = new URLSearchParams((location.hash.split("?")[1] || "")).get("id") || "new";
-  const headerIdUse = headerId || headerIdFromHash;
+  const headerIdFromHash = new URLSearchParams(location.hash.split("?")[1] || "").get("id") || "new";
+  const headerIdUse = headerId && headerId !== "new" ? headerId : headerIdFromHash;
 
   // 管理者は true にすると vendorId も編集可
   const IS_MANAGER = false;
   // 伝票が確定済みなら編集不可（ダブル防御）
   const isLocked = header?.status === "confirmed";
-// props: headerId は "new" も来る前提
-  // const isNew = headerId === "new";
   const isNew = headerIdUse === "new";
 
   // 新規は誰でもベンダー編集可／既存は管理者のみ
@@ -161,6 +167,163 @@ export function VendorEdit({ headerId, onBack, initialVendorId }: Props) {
 
   const itemsForPick = vendorItems.length > 0 ? vendorItems : masterItems;
 
+  const buildLinesForSave = (): VendorOrderLine[] => {
+    const hid = isNew ? "new" : headerIdUse;
+
+    return lines
+      .map((l) => ({
+        ...l,
+        headerId: hid,
+        itemId: ID.item(l.itemId || ""),
+        itemName: l.itemName ?? "",
+        unit: l.unit ?? "",
+        spec: l.spec ?? "",
+        tempZone: l.tempZone ?? undefined,
+        note: l.note ?? "",
+        lotNo: l.lotNo ?? "",
+        orderedQty: Number(l.orderedQty || 0),
+        shipQty: Number(l.shipQty || 0),
+      }))
+      .filter((l) => l.itemId !== "000000"); // 空入力などを弾く（必要なら条件調整）
+  };
+
+  function buildBackToListHash(selectId?: string) {
+    const df  = sessionStorage.getItem("shipments.dateFrom") || "";
+    const dt  = sessionStorage.getItem("shipments.dateTo") || "";
+    const vid = sessionStorage.getItem("shipments.vendorId") || "";
+    const did = sessionStorage.getItem("shipments.destinationId") || "";
+    const hid = sessionStorage.getItem("shipments.headerId") || "";
+
+    const q = new URLSearchParams();
+    if (df) q.set("dateFrom", df);
+    if (dt) q.set("dateTo", dt);
+    if (vid) q.set("vendorId", vid);
+    if (did) q.set("destinationId", did);
+    if (hid) q.set("headerId", hid);
+    if (selectId) q.set("selectId", selectId);
+
+    const qs = q.toString();
+    return qs ? `#/vendor/shipments?${qs}` : "#/vendor/shipments";
+  }
+
+  const onSave = async () => {
+    if (saving) return;
+    setSaving(true);
+
+    try {
+      // --- ヘッダ正規化 ---
+      const deliveryDate = String(headerDraft.deliveryDate || "").slice(0, 10);
+      const vendorId = ID.vendor(headerDraft.vendorId);
+      const destinationId = ID.store(headerDraft.destinationId);
+      const destinationName = String(headerDraft.destinationName || "");
+
+      if (!deliveryDate || !vendorId || !destinationId) {
+        alert("納品日 / ベンダー / 納品先ID は必須です。");
+        return;
+      }
+
+      // 画面側にも正規化値を反映（ゼロ埋め）
+      setHeaderDraft((d) => ({
+        ...d,
+        deliveryDate,
+        vendorId,
+        destinationId,
+        destinationName,
+      }));
+
+      const saveLines = buildLinesForSave();
+
+      // --- 保存 ---
+      if (isNew) {
+        // 新規作成（サーバ側が lines も受け取れる前提）
+        const r = await createShipment({
+          deliveryDate,
+          // orderDate: deliveryDate, // サーバが必要なら。不要なら消してOK
+          vendorId,
+          destinationId,
+          destinationName,
+          lines: saveLines,
+        });
+
+        const newId = String(r?.header?.id || "");
+        if (!newId) {
+          alert("新規作成に失敗しました（id が返りません）。");
+          return;
+        }
+
+        // 採番後IDへ遷移（同一画面のまま編集モードへ）
+        // const base = location.hash.split("?")[0];
+        // location.hash = `${base}?id=${newId}`;
+
+        // 最新を再読込して画面に反映
+        const s = await getShipment(newId);
+        setHeader(s.header ?? null);
+        setLines(s.lines ?? []);
+
+        alert("保存しました。");
+        onBack?.();
+        location.hash = buildBackToListHash(newId);
+        // onBack?.();
+        // location.hash = "#/vendor/shipments";
+        return;
+      }
+
+      // 既存更新
+      const id = headerIdUse;
+
+      await updateShipmentHeader(id, {
+        deliveryDate,
+        // orderDate: deliveryDate, // サーバが必要なら。不要なら消してOK
+        vendorId,
+        destinationId,
+        destinationName,
+      });
+
+      await replaceLines(id, saveLines);
+
+      // 最新を再読込
+      const s = await getShipment(id);
+      setHeader(s.header ?? null);
+      setLines(s.lines ?? []);
+
+      alert("保存しました。");
+      onBack?.();
+      location.hash = buildBackToListHash(headerIdUse);
+    } catch (e: unknown) {
+      // 409 などを画面に出す
+      if (isApiHttpError(e)) {
+        const b =
+          typeof e.body === "object" && e.body !== null
+            ? (e.body as Record<string, unknown>)
+            : null;
+
+        const err = b?.error;
+        const msg = b?.message;
+
+        if (e.status === 409 && err === "unit_price_missing") {
+          alert(typeof msg === "string" ? msg : "単価未登録の品目があるため保存できません。");
+          return;
+        }
+        if (e.status === 409 && err === "shipment_duplicate") {
+          alert(typeof msg === "string" ? msg : "同一条件の伝票が既に存在します。");
+          return;
+        }
+
+        if (typeof msg === "string") {
+          alert(msg);
+          return;
+        }
+
+        alert(`${e.status} ${e.statusText}`);
+        return;
+      }
+
+      alert(e instanceof Error ? e.message : String(e));
+    } finally {
+      setSaving(false);
+    }
+  };
+
   return (
     <div className="p-4 space-y-3">
       <h1 className="text-xl font-bold">
@@ -176,9 +339,8 @@ export function VendorEdit({ headerId, onBack, initialVendorId }: Props) {
           type="button"
           className="border rounded px-3 py-1"
           onClick={() => {
-            onBack?.();
-            // URLも必ず戻す（親が未指定でも動く二重化）
-            location.hash = '#/vendor/shipments';
+          onBack?.();
+          location.hash = buildBackToListHash();
           }}
         >
           一覧へ戻る
@@ -245,120 +407,10 @@ export function VendorEdit({ headerId, onBack, initialVendorId }: Props) {
             </div>
             <button
               className="border rounded px-3 py-1 ml-auto"
-              disabled={isLocked}
-              onClick={async () => {
-                // 共通バリデーション
-                if (!headerDraft.deliveryDate || !headerDraft.vendorId || !headerDraft.destinationId) {
-                  alert("納品日・ベンダー・納品先IDは必須です。");
-                  return;
-                }
-                // 明細バリデーション：0行禁止・有効行が1つ以上
-                const validLines = lines.filter(l => l.itemId && Number(l.shipQty) > 0);
-                if (validLines.length === 0) {
-                  alert("明細を1行以上入力してください（品目コード & 数量>0）。");
-                  return;
-                }
-
-                if (isNew) {
-                  // isNew ブロック内
-                  const res = await createShipment({
-                    deliveryDate: headerDraft.deliveryDate,
-                    vendorId: ID.vendor(headerDraft.vendorId),
-                    destinationId: ID.store(headerDraft.destinationId),
-                    destinationName: headerDraft.destinationName || undefined,
-                    lines: validLines.map(l => ({
-                      itemId: ID.item(l.itemId),
-                      itemName: l.itemName || undefined,
-                      unit: l.unit || "",
-                      spec: l.spec,
-                      tempZone: l.tempZone,
-                      shipQty: Number(l.shipQty || 0),
-                      note: l.note,
-                      lotNo: l.lotNo,
-                    })),
-                  });
-
-                  // 新規作成成功後（createShipment の直後）
-                  logEvent({
-                    type: "shipment.save",
-                    headerId: res.header.id,
-                    vendorId: res.header.vendorId,
-                    destinationId: res.header.destinationId,
-                    destinationName: res.header.destinationName, 
-                    deliveryDate: res.header.deliveryDate,
-                    memo: "新規作成・明細保存",
-                  });
-
-                  alert(`伝票を作成しました（${res.header.id}）`);
-
-                  // ✅ 新規作成後はそのまま編集画面に遷移
-                  // 新規・既存ともに
-                  location.hash =
-                    `#/vendor/shipments?dateFrom=${encodeURIComponent(headerDraft.deliveryDate)}` +  // 単日扱いなら from=to=納品日
-                    `&dateTo=${encodeURIComponent(headerDraft.deliveryDate)}` +
-                    `&vendorId=${encodeURIComponent(headerDraft.vendorId)}` +
-                    `&destinationId=${encodeURIComponent(headerDraft.destinationId)}` +
-                    `&selectId=${encodeURIComponent(res.header.id)}`;
-
-                  return;
-                } else {
-                  // 既存更新：ヘッダ＋明細の一括保存
-                  // === 既存（更新） ===
-                  if (!header) return;
-
-                  // ヘッダ → 先に更新
-                  await updateShipmentHeader(header.id, {
-                    deliveryDate: headerDraft.deliveryDate,
-                    vendorId: ID.vendor(headerDraft.vendorId),
-                    destinationId: ID.store(headerDraft.destinationId),
-                    destinationName: headerDraft.destinationName || undefined,
-                  });
-
-                  // 明細 → itemId 入力済みのみ保存（数量0も含める／フィルタで qty>0 は絶対にしない）
-                  const toSave = lines
-                    .filter(l => l.itemId) // ★ lineId 条件を外す：新規行も UPSERT で保存
-                    .map(l => ({
-                      ...l,
-                      itemId: ID.item(l.itemId),
-                      shipQty: Number(l.shipQty || 0),
-                    }));
-                  // await saveLines(header.id, toSave);
-                  await replaceLines(header.id, toSave);
-
-
-                  // 既存保存成功後（updateShipmentHeader/saveLines の後）
-                  logEvent({
-                    type: "shipment.save",
-                    headerId: header.id,
-                    vendorId: header.vendorId,
-                    destinationId: header.destinationId,
-                    destinationName: header.destinationName, 
-                    deliveryDate: header.deliveryDate,
-                    memo: "編集保存",
-                  });
-                  
-                  alert("保存しました。");
-                  // 新規・既存ともに
-                  location.hash =
-                    `#/vendor/shipments?dateFrom=${encodeURIComponent(headerDraft.deliveryDate)}` +  // 単日扱いなら from=to=納品日
-                    `&dateTo=${encodeURIComponent(headerDraft.deliveryDate)}` +
-                    `&vendorId=${encodeURIComponent(headerDraft.vendorId)}` +
-                    `&destinationId=${encodeURIComponent(headerDraft.destinationId)}` +
-                    `&selectId=${encodeURIComponent(header.id)}`;
-                  return;
-
-                  // 表示上の header も更新
-                  setHeader(h => h ? ({
-                    ...h,
-                    deliveryDate: headerDraft.deliveryDate,
-                    vendorId: headerDraft.vendorId,
-                    destinationId: headerDraft.destinationId,
-                    destinationName: headerDraft.destinationName || undefined,
-                  }) : h);
-                }
-              }}
+              disabled={isLocked || saving}
+              onClick={onSave}
             >
-              保存
+              {saving ? "保存中…" : "保存"}
             </button>
           </div>
         </div>

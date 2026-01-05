@@ -20,9 +20,13 @@ export type StoreShipmentLine = {
   id?: number;
   lineNo?: number;
   itemId: string;
+  itemName?: string | null;   // ★追加
   qty: number;
   unit: string | null;
   memo: string | null;
+  // backendが返してるので、ついでに（任意）
+  unitCost?: number;
+  amount?: number;
 };
 
 // ★ 保存用 payload の型
@@ -48,23 +52,6 @@ export type SaveStoreShipmentPayload = {
   header: SaveStoreShipmentHeader;
   lines: SaveStoreShipmentLine[];
 };
-//---修正e
-
-// export type StoreShipmentStatus = "draft" | "confirmed";
-// export type StoreShipmentMovementType = "TRANSFER" | "DISPOSAL";
-
-
-// export type StoreShipmentHeader = {
-//   id: number;
-//   fromStoreId: string;
-//   toStoreId: string | null;
-//   movementType: StoreShipmentMovementType;
-//   shipmentDate: string;
-//   status: StoreShipmentStatus;
-//   memo: string | null;
-//   createdAt: string;
-//   updatedAt: string;
-// };
 
 export type SearchStoreShipmentsParams = {
   storeId: string;
@@ -72,6 +59,7 @@ export type SearchStoreShipmentsParams = {
   to?: string;
   movementType?: StoreShipmentMovementType;
   status?: StoreShipmentStatus;
+  slipNo?: string; // ★伝票番号（id）
 };
 
 async function getJson<T>(input: RequestInfo, init?: RequestInit): Promise<T> {
@@ -97,6 +85,7 @@ export async function searchStoreShipments(
   if (params.to) qs.set("to", params.to);
   if (params.movementType) qs.set("movementType", params.movementType);
   if (params.status) qs.set("status", params.status);
+  if (params.slipNo) qs.set("slipNo", params.slipNo);
 
   const data = await getJson<{ headers: StoreShipmentHeader[] }>(
     `/store/shipments?${qs.toString()}`
@@ -157,3 +146,35 @@ export async function saveStoreShipment(
   return res.json() as Promise<{ ok: boolean; headerId: number }>;
 }
 
+// ★ 店舗マスタ（モーダル用）
+export type MasterStore = { id: string; name: string | null };
+
+export async function listMasterStores(): Promise<MasterStore[]> {
+  return await getJson<MasterStore[]>("/master/stores");
+}
+
+// ★ 移動可能品目（在庫>0）モーダル用
+export type MovableItem = {
+  itemId: string;
+  itemName: string | null;
+  onHandQty: number;
+  unit: string | null;
+  stockUnit: string | null;
+  stockConv: number;
+};
+
+export async function listMovableItems(params: {
+  storeId: string;
+  q?: string;
+  limit?: number;
+}): Promise<MovableItem[]> {
+  const qs = new URLSearchParams();
+  qs.set("storeId", params.storeId);
+  if (params.q) qs.set("q", params.q);
+  if (params.limit) qs.set("limit", String(params.limit));
+
+  const data = await getJson<{ ok: boolean; items: MovableItem[] }>(
+    `/store/shipments/movable-items?${qs.toString()}`
+  );
+  return data.items ?? [];
+}

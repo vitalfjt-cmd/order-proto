@@ -54,6 +54,83 @@ function ymd(date: Date): string {
   const d = `${date.getDate()}`.padStart(2, '0');
   return `${y}-${m}-${d}`;
 }
+// 追加
+// 409 などで返すための軽い例外
+class ApiError extends Error {
+  status: number;
+  body: any;
+  constructor(status: number, body: any) {
+    super(body?.message ?? body?.error ?? "ApiError");
+    this.status = status;
+    this.body = body;
+  }
+}
+
+function hasOwn(obj: any, key: string): boolean {
+  return Object.prototype.hasOwnProperty.call(obj, key);
+}
+
+// vendor + item + 日付時点の単価（valid_from/to 対応）
+const findUnitPriceAt = db.prepare(`
+  SELECT unit_price AS unitPrice
+    FROM item_prices
+   WHERE vendor_id = ?
+     AND item_id   = ?
+     AND valid_from <= ?
+     AND (valid_to IS NULL OR valid_to >= ?)
+   ORDER BY valid_from DESC
+   LIMIT 1
+`);
+
+function resolveUnitPriceOrThrow(args: {
+  vendorId: string;
+  deliveryDate: string; // YYYY-MM-DD
+  shipmentId: number;
+  line: any;
+}): number {
+  const { vendorId, deliveryDate, shipmentId, line } = args;
+
+  // ① unitPrice が明示されているならそれを採用（0 も尊重）
+  const hasUnitPriceProp = hasOwn(line, "unitPrice") || hasOwn(line, "unit_price");
+  if (hasUnitPriceProp) {
+    const v = line.unitPrice ?? line.unit_price;
+    if (v === "" || v == null) {
+      // 明示はされているが空：未指定扱いにしてマスタ引きへ
+    } else {
+      const n = Number(v);
+      if (!Number.isFinite(n) || n < 0) {
+        throw new ApiError(409, {
+          ok: false,
+          error: "unit_price_invalid",
+          message: `単価が不正です（itemId=${line.itemId ?? line.item_id}）`,
+          shipmentId,
+          vendorId,
+          deliveryDate,
+        });
+      }
+      return n;
+    }
+  }
+
+  // ② 明示が無い（or 空）ならマスタから引く
+  const itemId = String(line.itemId ?? line.item_id ?? "");
+  const row = findUnitPriceAt.get(vendorId, itemId, deliveryDate, deliveryDate) as any;
+  const p = row?.unitPrice;
+  if (p == null) {
+    throw new ApiError(409, {
+      ok: false,
+      error: "unit_price_missing",
+      message:
+        `単価未登録の品目があるため、伝票を保存できません（item_prices を登録してください）。 itemId=${itemId}`,
+      shipmentId,
+      vendorId,
+      deliveryDate,
+      itemId,
+    });
+  }
+  return Number(p);
+}
+// 追加　ここまで
 
 // ===== 一覧取得 (/shipments) =====
 // VendorShipments の検索で利用（snake_case で返す）
@@ -272,7 +349,7 @@ shipments.get('/shipments/:id/lines', (req, res) => {
 shipments.post('/shipments/create', (req, res) => {
   const body = req.body || {};
   const deliveryDate = String(body.deliveryDate || '').slice(0, 10);
-  const orderDate = body.orderDate || body.deliveryDate;
+  const orderDate = String(body.orderDate || body.deliveryDate || '').slice(0, 10);
   const vendorId = ID.vendor(String(body.vendorId || ''));
   const destinationId = ID.store(String(body.destinationId || ''));
   const destinationName: string | null =
@@ -281,13 +358,17 @@ shipments.post('/shipments/create', (req, res) => {
       : null;
 
   if (!deliveryDate || !vendorId || !destinationId) {
-    return res.status(400).json({ ok: false, error: 'deliveryDate, vendorId, destinationId are required' });
+    return res.status(400).json({
+      ok: false,
+      error: 'deliveryDate, vendorId, destinationId are required',
+    });
   }
 
   const rawLines: any[] = Array.isArray(body.lines) ? body.lines : [];
 
+  // 1) ヘッダ作成
   const tx = db.transaction(() => {
-        const hr = db.prepare(
+    const hr = db.prepare(
       `
       INSERT INTO shipments (
         vendor_id,
@@ -310,7 +391,6 @@ shipments.post('/shipments/create', (req, res) => {
         datetime('now','localtime')
       )
       `
-      
     ).run({
       vendorId,
       destinationId,
@@ -319,52 +399,51 @@ shipments.post('/shipments/create', (req, res) => {
       orderDate,
     });
 
-    const headerId = Number(hr.lastInsertRowid);
-
-    if (rawLines.length) {
-      const insLine = db.prepare(
-        `
-        INSERT INTO shipment_lines
-          (shipment_id, item_id, ordered_qty, ship_qty, unit_price, amount, unit, spec, temp_zone, lot_no, note)
-        VALUES
-          (@shipmentId, @itemId, @orderedQty, @shipQty, @unitPrice, @amount, @unit, @spec, @tempZone, @lotNo, @note)
-        `
-      );
-
-      for (const r of rawLines) {
-        const itemId = ID.item(String(r.itemId || r.item_id || ''));
-        if (!itemId) continue;
-
-        const shipQty = Number(r.shipQty ?? r.ship_qty ?? 0);
-        const orderedQty = Number(r.orderedQty ?? r.ordered_qty ?? shipQty);
-        const unitPrice = Number(r.unitPrice ?? r.unit_price ?? 0);
-        const amount =
-          r.amount != null
-            ? Number(r.amount)
-            : shipQty * unitPrice;
-
-        insLine.run({
-          shipmentId: headerId,
-          itemId,
-          orderedQty,
-          shipQty,
-          unitPrice,
-          amount,
-          unit: r.unit ?? null,
-          spec: r.spec ?? null,
-          tempZone: r.tempZone ?? r.temp_zone ?? null,
-          lotNo: r.lotNo ?? r.lot_no ?? null,
-          note: r.note ?? null,
-        });
-      }
-    }
-
-    return headerId;
+    return Number(hr.lastInsertRowid);
   });
 
-  const newId = tx() as number;
+  let newId: number;
+  try {
+    newId = tx();
+  } catch (e: any) {
+    // UNIQUE 制約（同一 vendor/destination/delivery_date で二重作成）
+    const msg = String(e?.message ?? e);
+    if (msg.includes('UNIQUE constraint failed: shipments.vendor_id, shipments.destination_id, shipments.delivery_date')) {
+      return res.status(409).json({
+        ok: false,
+        error: 'shipment_duplicate',
+        message: '同一の納品日・ベンダー・納品先の出荷伝票が既に存在します。',
+        vendorId,
+        destinationId,
+        deliveryDate,
+      });
+    }
 
-  // レスポンスは VendorOrderHeader 形式（camelCase）
+    console.error('[shipments/create] header insert failed', e);
+    return res.status(500).json({ ok: false, error: msg });
+  }
+
+  // 2) 明細保存（単価解決に失敗したら 409 を返す）
+  try {
+    if (rawLines.length) {
+      replaceLinesInternal(newId, rawLines);
+    }
+  } catch (e: any) {
+    console.error('[shipments/create] replaceLines failed', e);
+
+    // ヘッダだけ残るのを防ぐ
+    try {
+      db.prepare(`DELETE FROM shipments WHERE id = ?`).run(newId);
+    } catch {}
+
+    // ApiError(409) をそのまま返す
+    if (e && typeof e === 'object' && 'status' in e && 'body' in e) {
+      return res.status((e as any).status).json((e as any).body);
+    }
+    return res.status(500).json({ ok: false, error: String(e?.message ?? e) });
+  }
+
+  // 3) 作成結果を返す
   const headerRow = db.prepare(
     `
     SELECT
@@ -393,8 +472,9 @@ shipments.post('/shipments/create', (req, res) => {
     destinationName: headerRow.destination_name ?? undefined,
   };
 
-  res.status(201).json({ ok: true, header });
+  return res.status(201).json({ ok: true, header });
 });
+
 
 // ===== ヘッダ更新 (/shipments/:id PATCH) =====
 shipments.patch('/shipments/:id', (req, res) => {
@@ -463,41 +543,140 @@ shipments.patch('/shipments/:id', (req, res) => {
   res.json({ ok: true });
 });
 
-// ===== 明細一括置換 (/shipments/:id/lines/replace, /lines/bulk) =====
 function replaceLinesInternal(shipmentId: number, rows: any[]) {
+  // ヘッダから vendor_id / delivery_date を取得
+  const hdr = db
+    .prepare(
+      `
+      SELECT vendor_id AS vendorId, delivery_date AS deliveryDate
+        FROM shipments
+       WHERE id = ?
+      `
+    )
+    .get(shipmentId) as { vendorId?: string; deliveryDate?: string } | undefined;
+
+  if (!hdr?.vendorId || !hdr?.deliveryDate) {
+    throw new ApiError(404, {
+      ok: false,
+      error: "shipment_not_found",
+      message: "出荷ヘッダが見つかりません。",
+      shipmentId,
+    });
+  }
+
+  const vendorId = String(hdr.vendorId);
+  const deliveryDate = String(hdr.deliveryDate); // YYYY-MM-DD
+
+  // 単価マスタ参照（deliveryDate 時点）
+  const pickUnitPriceStmt = db.prepare(`
+      SELECT p.unit_price AS price
+        FROM item_prices p
+       WHERE p.vendor_id = ?
+         AND p.item_id   = ?
+         AND p.valid_from <= ?
+         AND (p.valid_to IS NULL OR p.valid_to >= ?)
+       ORDER BY p.valid_from DESC
+       LIMIT 1
+  `);
+
+  function pickUnitPrice(itemId: string): number | null {
+    const row = pickUnitPriceStmt.get(vendorId, itemId, deliveryDate, deliveryDate) as
+      | { price?: number }
+      | undefined;
+    if (!row || row.price == null) return null;
+    const n = Number(row.price);
+    return Number.isFinite(n) ? n : null;
+  }
+
   const tx = db.transaction((lines: any[]) => {
     db.prepare(`DELETE FROM shipment_lines WHERE shipment_id = ?`).run(shipmentId);
-
     if (!lines.length) return;
 
-    const ins = db.prepare(
-      `
+    const ins = db.prepare(`
       INSERT INTO shipment_lines
         (shipment_id, item_id, ordered_qty, ship_qty, unit_price, amount, unit, spec, temp_zone, lot_no, note)
       VALUES
         (@shipmentId, @itemId, @orderedQty, @shipQty, @unitPrice, @amount, @unit, @spec, @tempZone, @lotNo, @note)
-      `
-    );
+    `);
 
     for (const r of lines) {
-      const itemId = ID.item(String(r.itemId ?? r.item_id ?? ''));
+      const itemId = ID.item(String(r.itemId ?? r.item_id ?? ""));
       if (!itemId) continue;
 
       const shipQty = Number(r.shipQty ?? r.ship_qty ?? 0);
       const orderedQty = Number(r.orderedQty ?? r.ordered_qty ?? shipQty);
-      const unitPrice = Number(r.unitPrice ?? r.unit_price ?? 0);
-      const amount =
-        r.amount != null
-          ? Number(r.amount)
-          : shipQty * unitPrice;
+
+      // --- unitPrice 解決（NULLは禁止。解決できなければ 409） ---
+      const unitPriceProvided = hasOwn(r, "unitPrice") || hasOwn(r, "unit_price");
+      const rawUnitPrice = r.unitPrice ?? r.unit_price;
+
+      let unitPrice: number;
+
+      if (unitPriceProvided && rawUnitPrice !== "" && rawUnitPrice != null) {
+        // 明示指定（0 も尊重）
+        const n = Number(rawUnitPrice);
+        if (!Number.isFinite(n) || n < 0) {
+          throw new ApiError(409, {
+            ok: false,
+            error: "unit_price_invalid",
+            message: `単価が不正です（itemId=${itemId}）`,
+            shipmentId,
+            vendorId,
+            deliveryDate,
+            itemId,
+            unitPrice: rawUnitPrice,
+          });
+        }
+        unitPrice = n;
+      } else {
+        // 未指定 → マスタから補完（無ければ 409）
+        const up = pickUnitPrice(itemId);
+        if (up == null) {
+          throw new ApiError(409, {
+            ok: false,
+            error: "unit_price_missing",
+            message:
+              `単価未登録の品目があるため、伝票を保存できません（item_prices を登録してください）。 itemId=${itemId}`,
+            shipmentId,
+            vendorId,
+            deliveryDate,
+            itemId,
+          });
+        }
+        unitPrice = up;
+      }
+
+      // --- amount 解決（未指定なら自動計算。NULLは禁止） ---
+      const amountProvided = hasOwn(r, "amount");
+      const rawAmount = r.amount;
+
+      let amount: number;
+      if (amountProvided && rawAmount !== "" && rawAmount != null) {
+        const a = Number(rawAmount);
+        if (!Number.isFinite(a)) {
+          throw new ApiError(409, {
+            ok: false,
+            error: "amount_invalid",
+            message: `金額が不正です（itemId=${itemId}）`,
+            shipmentId,
+            vendorId,
+            deliveryDate,
+            itemId,
+            amount: rawAmount,
+          });
+        }
+        amount = a;
+      } else {
+        amount = shipQty * unitPrice;
+      }
 
       ins.run({
         shipmentId,
         itemId,
         orderedQty,
         shipQty,
-        unitPrice,
-        amount,
+        unitPrice, // ★必ず number（NOT NULL）
+        amount,    // ★必ず number（NOT NULL）
         unit: r.unit ?? null,
         spec: r.spec ?? null,
         tempZone: r.tempZone ?? r.temp_zone ?? null,
@@ -510,36 +689,27 @@ function replaceLinesInternal(shipmentId: number, rows: any[]) {
   tx(rows || []);
 }
 
+// 追加
+function handleReplaceLines(req: any, res: any, shipmentId: number, lines: any[]) {
+  try {
+    replaceLinesInternal(shipmentId, lines);
+    return res.json({ ok: true });
+  } catch (e: any) {
+    if (e && typeof e === "object" && "status" in e && "body" in e) {
+      // ApiError 想定
+      return res.status((e as any).status).json((e as any).body);
+    }
+    console.error("[replaceLines] error:", e);
+    return res.status(500).json({ ok: false, error: String(e?.message ?? e) });
+  }
+}
+
 shipments.post('/shipments/:id/lines/replace', (req, res) => {
   const id = Number(req.params.id);
-  if (!Number.isFinite(id)) return res.status(400).json({ error: 'invalid id' });
+  if (!Number.isFinite(id)) return res.status(400).json({ ok:false, error: 'invalid id' });
 
   const lines: any[] = Array.isArray(req.body?.lines) ? req.body.lines : [];
-  replaceLinesInternal(id, lines);
-
-  res.json({ ok: true });
-});
-
-// saveLines 用のエイリアス
-shipments.post('/shipments/:id/lines/bulk', (req, res) => {
-  const id = Number(req.params.id);
-  if (!Number.isFinite(id)) return res.status(400).json({ error: 'invalid id' });
-
-  const lines: any[] = Array.isArray(req.body) ? req.body : [];
-  replaceLinesInternal(id, lines);
-
-  res.json({ ok: true });
-});
-
-// 旧 UI 互換: /shipments/lines/replace, /vendor/shipments/lines/replace
-shipments.post(['/shipments/lines/replace', '/vendor/shipments/lines/replace'], (req, res) => {
-  const headerId = Number(req.body?.headerId);
-  if (!Number.isFinite(headerId)) return res.status(400).json({ error: 'invalid headerId' });
-
-  const lines: any[] = Array.isArray(req.body?.lines) ? req.body.lines : [];
-  replaceLinesInternal(headerId, lines);
-
-  res.json({ ok: true });
+  return handleReplaceLines(req, res, id, lines);
 });
 
 // ===== 単行削除 (/shipments/:id/lines/:itemId) =====
@@ -632,8 +802,7 @@ function generateShipmentsInternal(
       ? asOfRaw.replace('T', ' ').slice(0, 16) // 'YYYY-MM-DDTHH:MM:SS' → 'YYYY-MM-DD HH:MM'
       : asOfRaw;
 
-  const src = db.prepare(
-    `
+  const sqlBase = `
     WITH base AS (
       SELECT
         o.id         AS orderId,
@@ -675,140 +844,56 @@ function generateShipmentsInternal(
 
         -- リードタイム（日数）: 店舗×ベンダー上書き → ベンダー週間ルール
         CASE strftime('%w', l.orderDate)
-          WHEN '0' THEN COALESCE(
-            (SELECT lead_time_days_sun_override FROM store_vendor_overrides o
-             WHERE o.vendor_id = l.vendorId AND o.store_id = l.storeId),
-            (SELECT lead_time_days_sun FROM vendor_weekly_rules v
-             WHERE v.vendor_id = l.vendorId)
-          )
-          WHEN '1' THEN COALESCE(
-            (SELECT lead_time_days_mon_override FROM store_vendor_overrides o
-             WHERE o.vendor_id = l.vendorId AND o.store_id = l.storeId),
-            (SELECT lead_time_days_mon FROM vendor_weekly_rules v
-             WHERE v.vendor_id = l.vendorId)
-          )
-          WHEN '2' THEN COALESCE(
-            (SELECT lead_time_days_tue_override FROM store_vendor_overrides o
-             WHERE o.vendor_id = l.vendorId AND o.store_id = l.storeId),
-            (SELECT lead_time_days_tue FROM vendor_weekly_rules v
-             WHERE v.vendor_id = l.vendorId)
-          )
-          WHEN '3' THEN COALESCE(
-            (SELECT lead_time_days_wed_override FROM store_vendor_overrides o
-             WHERE o.vendor_id = l.vendorId AND o.store_id = l.storeId),
-            (SELECT lead_time_days_wed FROM vendor_weekly_rules v
-             WHERE v.vendor_id = l.vendorId)
-          )
-          WHEN '4' THEN COALESCE(
-            (SELECT lead_time_days_thu_override FROM store_vendor_overrides o
-             WHERE o.vendor_id = l.vendorId AND o.store_id = l.storeId),
-            (SELECT lead_time_days_thu FROM vendor_weekly_rules v
-             WHERE v.vendor_id = l.vendorId)
-          )
-          WHEN '5' THEN COALESCE(
-            (SELECT lead_time_days_fri_override FROM store_vendor_overrides o
-             WHERE o.vendor_id = l.vendorId AND o.store_id = l.storeId),
-            (SELECT lead_time_days_fri FROM vendor_weekly_rules v
-             WHERE v.vendor_id = l.vendorId)
-          )
-          WHEN '6' THEN COALESCE(
-            (SELECT lead_time_days_sat_override FROM store_vendor_overrides o
-             WHERE o.vendor_id = l.vendorId AND o.store_id = l.storeId),
-            (SELECT lead_time_days_sat FROM vendor_weekly_rules v
-             WHERE v.vendor_id = l.vendorId)
-          )
+          WHEN '0' THEN COALESCE((SELECT lead_time_days_sun_override FROM store_vendor_overrides o WHERE o.vendor_id = l.vendorId AND o.store_id = l.storeId),
+                                 (SELECT lead_time_days_sun FROM vendor_weekly_rules v WHERE v.vendor_id = l.vendorId))
+          WHEN '1' THEN COALESCE((SELECT lead_time_days_mon_override FROM store_vendor_overrides o WHERE o.vendor_id = l.vendorId AND o.store_id = l.storeId),
+                                 (SELECT lead_time_days_mon FROM vendor_weekly_rules v WHERE v.vendor_id = l.vendorId))
+          WHEN '2' THEN COALESCE((SELECT lead_time_days_tue_override FROM store_vendor_overrides o WHERE o.vendor_id = l.vendorId AND o.store_id = l.storeId),
+                                 (SELECT lead_time_days_tue FROM vendor_weekly_rules v WHERE v.vendor_id = l.vendorId))
+          WHEN '3' THEN COALESCE((SELECT lead_time_days_wed_override FROM store_vendor_overrides o WHERE o.vendor_id = l.vendorId AND o.store_id = l.storeId),
+                                 (SELECT lead_time_days_wed FROM vendor_weekly_rules v WHERE v.vendor_id = l.vendorId))
+          WHEN '4' THEN COALESCE((SELECT lead_time_days_thu_override FROM store_vendor_overrides o WHERE o.vendor_id = l.vendorId AND o.store_id = l.storeId),
+                                 (SELECT lead_time_days_thu FROM vendor_weekly_rules v WHERE v.vendor_id = l.vendorId))
+          WHEN '5' THEN COALESCE((SELECT lead_time_days_fri_override FROM store_vendor_overrides o WHERE o.vendor_id = l.vendorId AND o.store_id = l.storeId),
+                                 (SELECT lead_time_days_fri FROM vendor_weekly_rules v WHERE v.vendor_id = l.vendorId))
+          WHEN '6' THEN COALESCE((SELECT lead_time_days_sat_override FROM store_vendor_overrides o WHERE o.vendor_id = l.vendorId AND o.store_id = l.storeId),
+                                 (SELECT lead_time_days_sat FROM vendor_weekly_rules v WHERE v.vendor_id = l.vendorId))
         END AS lt,
 
         -- 発注可否（店舗×ベンダー上書き → ベンダー週間ルール）
         CASE strftime('%w', l.orderDate)
-          WHEN '0' THEN COALESCE(
-            (SELECT orderable_sun_override FROM store_vendor_overrides o
-             WHERE o.vendor_id = l.vendorId AND o.store_id = l.storeId),
-            (SELECT orderable_sun FROM vendor_weekly_rules v
-             WHERE v.vendor_id = l.vendorId)
-          )
-          WHEN '1' THEN COALESCE(
-            (SELECT orderable_mon_override FROM store_vendor_overrides o
-             WHERE o.vendor_id = l.vendorId AND o.store_id = l.storeId),
-            (SELECT orderable_mon FROM vendor_weekly_rules v
-             WHERE v.vendor_id = l.vendorId)
-          )
-          WHEN '2' THEN COALESCE(
-            (SELECT orderable_tue_override FROM store_vendor_overrides o
-             WHERE o.vendor_id = l.vendorId AND o.store_id = l.storeId),
-            (SELECT orderable_tue FROM vendor_weekly_rules v
-             WHERE v.vendor_id = l.vendorId)
-          )
-          WHEN '3' THEN COALESCE(
-            (SELECT orderable_wed_override FROM store_vendor_overrides o
-             WHERE o.vendor_id = l.vendorId AND o.store_id = l.storeId),
-            (SELECT orderable_wed FROM vendor_weekly_rules v
-             WHERE v.vendor_id = l.vendorId)
-          )
-          WHEN '4' THEN COALESCE(
-            (SELECT orderable_thu_override FROM store_vendor_overrides o
-             WHERE o.vendor_id = l.vendorId AND o.store_id = l.storeId),
-            (SELECT orderable_thu FROM vendor_weekly_rules v
-             WHERE v.vendor_id = l.vendorId)
-          )
-          WHEN '5' THEN COALESCE(
-            (SELECT orderable_fri_override FROM store_vendor_overrides o
-             WHERE o.vendor_id = l.vendorId AND o.store_id = l.storeId),
-            (SELECT orderable_fri FROM vendor_weekly_rules v
-             WHERE v.vendor_id = l.vendorId)
-          )
-          WHEN '6' THEN COALESCE(
-            (SELECT orderable_sat_override FROM store_vendor_overrides o
-             WHERE o.vendor_id = l.vendorId AND o.store_id = l.storeId),
-            (SELECT orderable_sat FROM vendor_weekly_rules v
-             WHERE v.vendor_id = l.vendorId)
-          )
+          WHEN '0' THEN COALESCE((SELECT orderable_sun_override FROM store_vendor_overrides o WHERE o.vendor_id = l.vendorId AND o.store_id = l.storeId),
+                                 (SELECT orderable_sun FROM vendor_weekly_rules v WHERE v.vendor_id = l.vendorId))
+          WHEN '1' THEN COALESCE((SELECT orderable_mon_override FROM store_vendor_overrides o WHERE o.vendor_id = l.vendorId AND o.store_id = l.storeId),
+                                 (SELECT orderable_mon FROM vendor_weekly_rules v WHERE v.vendor_id = l.vendorId))
+          WHEN '2' THEN COALESCE((SELECT orderable_tue_override FROM store_vendor_overrides o WHERE o.vendor_id = l.vendorId AND o.store_id = l.storeId),
+                                 (SELECT orderable_tue FROM vendor_weekly_rules v WHERE v.vendor_id = l.vendorId))
+          WHEN '3' THEN COALESCE((SELECT orderable_wed_override FROM store_vendor_overrides o WHERE o.vendor_id = l.vendorId AND o.store_id = l.storeId),
+                                 (SELECT orderable_wed FROM vendor_weekly_rules v WHERE v.vendor_id = l.vendorId))
+          WHEN '4' THEN COALESCE((SELECT orderable_thu_override FROM store_vendor_overrides o WHERE o.vendor_id = l.vendorId AND o.store_id = l.storeId),
+                                 (SELECT orderable_thu FROM vendor_weekly_rules v WHERE v.vendor_id = l.vendorId))
+          WHEN '5' THEN COALESCE((SELECT orderable_fri_override FROM store_vendor_overrides o WHERE o.vendor_id = l.vendorId AND o.store_id = l.storeId),
+                                 (SELECT orderable_fri FROM vendor_weekly_rules v WHERE v.vendor_id = l.vendorId))
+          WHEN '6' THEN COALESCE((SELECT orderable_sat_override FROM store_vendor_overrides o WHERE o.vendor_id = l.vendorId AND o.store_id = l.storeId),
+                                 (SELECT orderable_sat FROM vendor_weekly_rules v WHERE v.vendor_id = l.vendorId))
         END AS orderable_raw,
 
         -- 締切時刻（HH:MM）
         CASE strftime('%w', l.orderDate)
-          WHEN '0' THEN COALESCE(
-            (SELECT cutoff_hhmm_sun_override FROM store_vendor_overrides o
-             WHERE o.vendor_id = l.vendorId AND o.store_id = l.storeId),
-            (SELECT cutoff_hhmm_sun FROM vendor_weekly_rules v
-             WHERE v.vendor_id = l.vendorId)
-          )
-          WHEN '1' THEN COALESCE(
-            (SELECT cutoff_hhmm_mon_override FROM store_vendor_overrides o
-             WHERE o.vendor_id = l.vendorId AND o.store_id = l.storeId),
-            (SELECT cutoff_hhmm_mon FROM vendor_weekly_rules v
-             WHERE v.vendor_id = l.vendorId)
-          )
-          WHEN '2' THEN COALESCE(
-            (SELECT cutoff_hhmm_tue_override FROM store_vendor_overrides o
-             WHERE o.vendor_id = l.vendorId AND o.store_id = l.storeId),
-            (SELECT cutoff_hhmm_tue FROM vendor_weekly_rules v
-             WHERE v.vendor_id = l.vendorId)
-          )
-          WHEN '3' THEN COALESCE(
-            (SELECT cutoff_hhmm_wed_override FROM store_vendor_overrides o
-             WHERE o.vendor_id = l.vendorId AND o.store_id = l.storeId),
-            (SELECT cutoff_hhmm_wed FROM vendor_weekly_rules v
-             WHERE v.vendor_id = l.vendorId)
-          )
-          WHEN '4' THEN COALESCE(
-            (SELECT cutoff_hhmm_thu_override FROM store_vendor_overrides o
-             WHERE o.vendor_id = l.vendorId AND o.store_id = l.storeId),
-            (SELECT cutoff_hhmm_thu FROM vendor_weekly_rules v
-             WHERE v.vendor_id = l.vendorId)
-          )
-          WHEN '5' THEN COALESCE(
-            (SELECT cutoff_hhmm_fri_override FROM store_vendor_overrides o
-             WHERE o.vendor_id = l.vendorId AND o.store_id = l.storeId),
-            (SELECT cutoff_hhmm_fri FROM vendor_weekly_rules v
-             WHERE v.vendor_id = l.vendorId)
-          )
-          WHEN '6' THEN COALESCE(
-            (SELECT cutoff_hhmm_sat_override FROM store_vendor_overrides o
-             WHERE o.vendor_id = l.vendorId AND o.store_id = l.storeId),
-            (SELECT cutoff_hhmm_sat FROM vendor_weekly_rules v
-             WHERE v.vendor_id = l.vendorId)
-          )
+          WHEN '0' THEN COALESCE((SELECT cutoff_hhmm_sun_override FROM store_vendor_overrides o WHERE o.vendor_id = l.vendorId AND o.store_id = l.storeId),
+                                 (SELECT cutoff_hhmm_sun FROM vendor_weekly_rules v WHERE v.vendor_id = l.vendorId))
+          WHEN '1' THEN COALESCE((SELECT cutoff_hhmm_mon_override FROM store_vendor_overrides o WHERE o.vendor_id = l.vendorId AND o.store_id = l.storeId),
+                                 (SELECT cutoff_hhmm_mon FROM vendor_weekly_rules v WHERE v.vendor_id = l.vendorId))
+          WHEN '2' THEN COALESCE((SELECT cutoff_hhmm_tue_override FROM store_vendor_overrides o WHERE o.vendor_id = l.vendorId AND o.store_id = l.storeId),
+                                 (SELECT cutoff_hhmm_tue FROM vendor_weekly_rules v WHERE v.vendor_id = l.vendorId))
+          WHEN '3' THEN COALESCE((SELECT cutoff_hhmm_wed_override FROM store_vendor_overrides o WHERE o.vendor_id = l.vendorId AND o.store_id = l.storeId),
+                                 (SELECT cutoff_hhmm_wed FROM vendor_weekly_rules v WHERE v.vendor_id = l.vendorId))
+          WHEN '4' THEN COALESCE((SELECT cutoff_hhmm_thu_override FROM store_vendor_overrides o WHERE o.vendor_id = l.vendorId AND o.store_id = l.storeId),
+                                 (SELECT cutoff_hhmm_thu FROM vendor_weekly_rules v WHERE v.vendor_id = l.vendorId))
+          WHEN '5' THEN COALESCE((SELECT cutoff_hhmm_fri_override FROM store_vendor_overrides o WHERE o.vendor_id = l.vendorId AND o.store_id = l.storeId),
+                                 (SELECT cutoff_hhmm_fri FROM vendor_weekly_rules v WHERE v.vendor_id = l.vendorId))
+          WHEN '6' THEN COALESCE((SELECT cutoff_hhmm_sat_override FROM store_vendor_overrides o WHERE o.vendor_id = l.vendorId AND o.store_id = l.storeId),
+                                 (SELECT cutoff_hhmm_sat FROM vendor_weekly_rules v WHERE v.vendor_id = l.vendorId))
         END AS cutoffHHmm_raw
       FROM lines l
     ),
@@ -820,46 +905,86 @@ function generateShipmentsInternal(
         orderDate,
         itemId,
         qty,
+
+        unitPrice AS unitPriceRaw,
         COALESCE(unitPrice, 0) AS unitPrice,
+
         date(orderDate, printf('+%d day', COALESCE(lt, 1))) AS deliveryDate,
         orderable_raw AS orderable,
-        cutoffHHmm_raw AS cutoffHHmm
+        cutoffHHmm_raw AS cutoffHHmm,
+
+        CASE
+          WHEN COALESCE(cutoffHHmm_raw, '23:59') <= '04:00' THEN
+            datetime(orderDate || ' ' || COALESCE(cutoffHHmm_raw, '23:59'), '+1 day')
+          ELSE
+            datetime(orderDate || ' ' || COALESCE(cutoffHHmm_raw, '23:59'))
+        END AS cutoffAt
       FROM vw
+    ),
+    base_filtered AS (
+      SELECT *
+      FROM resolved
+      WHERE (@df = '' OR orderDate >= @df)
+        AND (@dt = '' OR orderDate <= @dt)
+        AND (@vid IS NULL OR vendorId = @vid)
+        AND (COALESCE(@did,'') = '' OR storeId = @did)
+    ),
+    diagnostics AS (
+      SELECT
+        COUNT(*) AS totalBaseLines,
+        SUM(CASE WHEN COALESCE(orderable, 1) <> 1 THEN 1 ELSE 0 END) AS excludedNotOrderable,
+        SUM(CASE WHEN orderable IS NULL THEN 1 ELSE 0 END) AS missingOrderable,
+        SUM(CASE WHEN cutoffHHmm IS NULL THEN 1 ELSE 0 END) AS missingCutoffHHmm,
+        SUM(CASE WHEN unitPriceRaw IS NULL THEN 1 ELSE 0 END) AS missingUnitPrice,
+        SUM(CASE
+              WHEN @asOf <> ''
+               AND COALESCE(orderable, 1) = 1
+               AND cutoffAt > datetime(@asOf)
+              THEN 1 ELSE 0
+            END) AS excludedBeforeCutoff,
+        SUM(CASE
+              WHEN COALESCE(orderable, 1) = 1
+               AND (@asOf = '' OR cutoffAt <= datetime(@asOf))
+              THEN 1 ELSE 0
+            END) AS passedLines
+      FROM base_filtered
     ),
     filtered AS (
       SELECT *
-      FROM resolved
-      WHERE (@df = '' OR orderDate >= @df)   -- ★ 発注日で絞り込む
-        AND (@dt = '' OR orderDate <= @dt)   -- ★ ここも同様
-        AND (@vid IS NULL OR vendorId = @vid)
-        AND (COALESCE(@did,'') = '' OR storeId = @did)
-        -- 発注可能な曜日だけ
-        AND COALESCE(orderable, 1) = 1
-        -- 締切を過ぎたものだけ（asOf 未指定ならスキップ）
+      FROM base_filtered
+      WHERE COALESCE(orderable, 1) = 1
         AND (
           @asOf = ''
-          OR
-            CASE
-              -- cutoff が「早朝（04:00 より前）」なら、翌日にずらす
-               WHEN COALESCE(cutoffHHmm, '23:59') <= '04:00' THEN
-                datetime(orderDate || ' ' || COALESCE(cutoffHHmm, '23:59'), '+1 day')
-              -- それ以外（04:00 以降）は orderDate 当日の時刻として扱う
-              ELSE
-                datetime(orderDate || ' ' || COALESCE(cutoffHHmm, '23:59'))
-            END
-            <= datetime(@asOf)
+          OR cutoffAt <= datetime(@asOf)
         )
     )
-    SELECT *
-    FROM filtered
-    `
-  ).all({
+  `;
+
+  const src = db.prepare(`${sqlBase} SELECT * FROM filtered`).all({
     df,
     dt,
     vid: vid ?? null,
     did: did ?? '',
     asOf,
   }) as ResolvedRow[];
+
+  const diag = db.prepare(`${sqlBase} SELECT * FROM diagnostics`).get({
+    df,
+    dt,
+    vid: vid ?? null,
+    did: did ?? '',
+    asOf,
+  }) as any;
+
+  const reasons = {
+    totalBaseLines: Number(diag?.totalBaseLines ?? 0),
+    passedLines: Number(diag?.passedLines ?? 0),
+    excludedNotOrderable: Number(diag?.excludedNotOrderable ?? 0),
+    excludedBeforeCutoff: Number(diag?.excludedBeforeCutoff ?? 0),
+    missingUnitPrice: Number(diag?.missingUnitPrice ?? 0),
+    missingCutoffHHmm: Number(diag?.missingCutoffHHmm ?? 0),
+    missingOrderable: Number(diag?.missingOrderable ?? 0),
+  };
 
     // ★ デバッグログ（締切判定の挙動チェック用）
   console.log("[generateShipmentsInternal] params:", {
@@ -899,6 +1024,7 @@ function generateShipmentsInternal(
       // 新規：スキップ数（確定済みのため生成対象外）
       skippedHeaders: 0,
       skippedLines: 0,
+      reasons, // ★追加
     };
   }
 
@@ -964,6 +1090,7 @@ function generateShipmentsInternal(
       // 新規：プレビュー時点でスキップされる件数
       skippedHeaders,
       skippedLines,
+      reasons, // ★追加
     };
   }
 

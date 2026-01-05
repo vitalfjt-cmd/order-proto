@@ -6,10 +6,13 @@ import {
   type StoreShipmentHeader,
   type StoreShipmentMovementType,
   type StoreShipmentStatus,
+  listMasterStores,
+  type MasterStore,
 } from "./storeShipmentsApi";
 
 type Props = {
   storeId: string;               // 例: "0002"
+  onChangeStoreId?: (storeId: string) => void;
   onCreate?: () => void;         // 新規作成（Step4 で利用予定）
   onEdit?: (headerId: number) => void; // 編集画面へ（Step4 で利用予定）
 };
@@ -24,7 +27,7 @@ const statusLabel: Record<StoreShipmentStatus, string> = {
   confirmed: "確定",
 };
 
-export default function StoreShipmentList({ storeId, onCreate, onEdit }: Props) {
+export default function StoreShipmentList({ storeId, onChangeStoreId, onCreate, onEdit }: Props) {
   const today = new Date().toISOString().slice(0, 10);
 
   const [dateFrom, setDateFrom] = useState(today);
@@ -32,10 +35,49 @@ export default function StoreShipmentList({ storeId, onCreate, onEdit }: Props) 
   const [movementType, setMovementType] =
     useState<StoreShipmentMovementType | "">("");
   const [status, setStatus] = useState<StoreShipmentStatus | "">("");
+  const [slipNo, setSlipNo] = useState<string>(""); // ★伝票番号
 
   const [rows, setRows] = useState<StoreShipmentHeader[]>([]);
   const [selected, setSelected] = useState<Record<number, boolean>>({});
   const [loading, setLoading] = useState(false);
+  const [storeIdInput, setStoreIdInput] = useState(storeId);
+  useEffect(() => setStoreIdInput(storeId), [storeId]);
+
+  const [storeModalOpen, setStoreModalOpen] = useState(false);
+  const [storeKeyword, setStoreKeyword] = useState("");
+  const [stores, setStores] = useState<MasterStore[]>([]);
+  const [storesLoading, setStoresLoading] = useState(false);
+  const clearResults = () => {
+    setRows([]);
+    // もし total/summary など別stateがあればここで一緒にクリア
+  };
+
+
+  useEffect(() => {
+    if (!storeModalOpen) return;
+    (async () => {
+      setStoresLoading(true);
+      try {
+        const s = await listMasterStores();
+        setStores(s);
+      } catch (e) {
+        console.error(e);
+        alert("店舗一覧の取得に失敗しました。");
+        setStores([]);
+      } finally {
+        setStoresLoading(false);
+      }
+    })();
+  }, [storeModalOpen]);
+
+  const storeName =
+    stores.find((s) => s.id === storeIdInput)?.name ?? null;
+
+  const filteredStores = stores.filter((s) => {
+    const k = storeKeyword.trim();
+    if (!k) return true;
+    return s.id.includes(k) || (s.name ?? "").includes(k);
+  });
 
   useEffect(() => {
     void doSearch();
@@ -46,11 +88,12 @@ export default function StoreShipmentList({ storeId, onCreate, onEdit }: Props) 
     setLoading(true);
     try {
       const headers = await searchStoreShipments({
-        storeId,
+        storeId: storeIdInput,
         from: dateFrom,
         to: dateTo,
         movementType: movementType || undefined,
         status: status || undefined,
+        slipNo: slipNo.trim() || undefined,
       });
       setRows(headers);
 
@@ -96,22 +139,10 @@ export default function StoreShipmentList({ storeId, onCreate, onEdit }: Props) 
     setDateTo(today);
     setMovementType("");
     setStatus("");
-
-    try {
-      const headers = await searchStoreShipments({
-        storeId,
-        from: today,
-        to: today,
-      });
-      setRows(headers);
-
-      const sel: Record<number, boolean> = {};
-      for (const h of headers) sel[h.id] = false;
-      setSelected(sel);
-    } catch (e) {
-      console.error(e);
-      alert("店舗出荷一覧の取得に失敗しました。");
-    }
+    setSlipNo("");
+    clearResults();
+    // 選択状態も空に（行が無いので）
+    setSelected({});
   }
 
   return (
@@ -125,7 +156,7 @@ export default function StoreShipmentList({ storeId, onCreate, onEdit }: Props) 
           <input
             type="date"
             value={dateFrom}
-            onChange={e => setDateFrom(e.target.value)}
+            onChange={e => {setDateFrom(e.target.value); clearResults();}}
             className="border rounded px-2 py-1 ml-1"
           />
         </label>
@@ -134,7 +165,7 @@ export default function StoreShipmentList({ storeId, onCreate, onEdit }: Props) 
           <input
             type="date"
             value={dateTo}
-            onChange={e => setDateTo(e.target.value)}
+            onChange={e => {setDateTo(e.target.value); clearResults();}}
             className="border rounded px-2 py-1 ml-1"
           />
         </label>
@@ -143,7 +174,7 @@ export default function StoreShipmentList({ storeId, onCreate, onEdit }: Props) 
           <select
             value={movementType}
             onChange={e =>
-              setMovementType(e.target.value as StoreShipmentMovementType | "")
+              {setMovementType(e.target.value as StoreShipmentMovementType | ""); clearResults(); }
             }
             className="border rounded px-2 py-1 ml-1"
           >
@@ -165,6 +196,20 @@ export default function StoreShipmentList({ storeId, onCreate, onEdit }: Props) 
             <option value="draft">下書き</option>
             <option value="confirmed">確定</option>
           </select>
+        </label>
+        <label>
+          伝票番号
+          <input
+            type="text"
+            value={slipNo}
+            onChange={(e) => {
+              setSlipNo(e.target.value);
+              clearResults();
+            }}
+            className="border rounded px-2 py-1 ml-1 w-[140px]"
+            placeholder="例: 123（部分一致）"
+            inputMode="numeric"
+          />
         </label>
 
         <button
@@ -192,7 +237,29 @@ export default function StoreShipmentList({ storeId, onCreate, onEdit }: Props) 
           </button>
         )}
       </div>
-
+      <label>
+        出荷元店舗
+        <div className="flex items-center gap-2 mt-1">
+          <input
+            type="text"
+            value={storeIdInput}
+            readOnly
+            className="border rounded px-2 py-1 font-mono w-[110px] bg-slate-50"
+          />
+          <button
+            type="button"
+            className="border rounded px-3 py-1"
+            onClick={() => { setStoreKeyword(""); setStoreModalOpen(true); }}
+          >
+            選択
+          </button>
+          {storeName && (
+            <span className="text-slate-600 text-xs truncate max-w-[240px]">
+              {storeName}
+            </span>
+          )}
+        </div>
+      </label>
       <div className="mb-2 text-sm text-slate-600">
         店舗ID: <span className="font-mono">{storeId}</span>
       </div>
@@ -300,6 +367,72 @@ export default function StoreShipmentList({ storeId, onCreate, onEdit }: Props) 
           選択を確定
         </button>
       </div>
+      {storeModalOpen && (
+        <div className="fixed inset-0 bg-black/30 flex items-center justify-center z-50">
+          <div className="bg-white rounded shadow w-[720px] max-w-[95vw] p-3">
+            <div className="flex items-center gap-2 mb-2">
+              <div className="font-semibold">出荷元店舗を選択</div>
+              <button
+                className="ml-auto border rounded px-3 py-1"
+                onClick={() => setStoreModalOpen(false)}
+              >
+                閉じる
+              </button>
+            </div>
+
+            <input
+              className="border rounded px-2 py-1 w-full mb-2"
+              placeholder="店舗ID または 店舗名で検索"
+              value={storeKeyword}
+              onChange={(e) => setStoreKeyword(e.target.value)}
+            />
+
+            {storesLoading ? (
+              <div className="text-slate-600 text-sm">読み込み中...</div>
+            ) : (
+              <div className="max-h-[60vh] overflow-auto border rounded">
+                <table className="w-full text-sm">
+                  <thead className="bg-slate-50">
+                    <tr className="[&>th]:px-2 [&>th]:py-1 text-left">
+                      <th style={{ width: 110 }}>店舗ID</th>
+                      <th>店舗名</th>
+                      <th style={{ width: 90 }}></th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {filteredStores.map((s) => (
+                      <tr key={s.id} className="[&>td]:px-2 [&>td]:py-1 border-t">
+                        <td className="font-mono">{s.id}</td>
+                        <td>{s.name ?? ""}</td>
+                        <td>
+                          <button
+                            className="border rounded px-2 py-0.5 text-xs"
+                            onClick={() => {
+                              setStoreIdInput(s.id);
+                              onChangeStoreId?.(s.id);
+                              clearResults();
+                              setStoreModalOpen(false);
+                            }}
+                          >
+                            選択
+                          </button>
+                        </td>
+                      </tr>
+                    ))}
+                    {filteredStores.length === 0 && (
+                      <tr>
+                        <td colSpan={3} className="px-2 py-6 text-center text-slate-500">
+                          該当なし
+                        </td>
+                      </tr>
+                    )}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
     </div>
   );
 }

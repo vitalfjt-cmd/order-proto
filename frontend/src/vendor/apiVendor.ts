@@ -60,8 +60,6 @@ export type MasterVendor = {
 };
 
 
-// type RawVendor = { id?: unknown; vendor_id?: unknown; code?: unknown; name?: unknown; vendor_name?: unknown };
-
 // サーバ応答（camel / snake 両対応）の生型定義
 type RawHeaderCamel = {
   id: number;
@@ -133,6 +131,49 @@ const url = (path: string, q?: Record<string, string | undefined>) => {
   return u.toString();
 };
 
+// --- 追加: HTTP エラーを status + body 付きで扱う ---
+export class ApiHttpError extends Error {
+  status: number;
+  statusText: string;
+  body: unknown;
+
+  constructor(status: number, statusText: string, body: unknown) {
+    super(`${status} ${statusText}`);
+    this.status = status;
+    this.statusText = statusText;
+    this.body = body;
+  }
+}
+
+export function isApiHttpError(e: unknown): e is ApiHttpError {
+  return (
+    typeof e === "object" &&
+    e !== null &&
+    "status" in e &&
+    "statusText" in e &&
+    "body" in e
+  );
+}
+
+async function readErrorBody(r: Response): Promise<unknown> {
+  const ct = (r.headers.get("content-type") || "").toLowerCase();
+  // JSON が返るなら JSON を読む（今回の 409 はこれが欲しい）
+  if (ct.includes("application/json")) {
+    try {
+      return await r.json() as unknown;
+    } catch {
+      return null;
+    }
+  }
+  // JSON 以外なら text を読む（たまに HTML/空 が来るため）
+  try {
+    const t = await r.text();
+    return t ? ({ message: t } as unknown) : null;
+  } catch {
+    return null;
+  }
+}
+
 // 追加：安全な型ガード
 function isRecord(v: unknown): v is Record<string, unknown> {
   return typeof v === "object" && v !== null;
@@ -148,19 +189,39 @@ function toItemId(s: string): string {
 
 async function getJson<T>(path: string, q?: Record<string, string | undefined>): Promise<T> {
   const r = await fetch(url(path, q));
-  if (!r.ok) throw new Error(`${r.status} ${r.statusText}`);
+  if (!r.ok) {
+    const body = await readErrorBody(r);
+    throw new ApiHttpError(r.status, r.statusText, body);
+  }
   return (await r.json()) as T;
 }
+
 async function postJson<T>(path: string, body: unknown): Promise<T> {
-  const r = await fetch(url(path), { method: "POST", headers: { "Content-Type":"application/json" }, body: JSON.stringify(body) });
-  if (!r.ok) throw new Error(`${r.status} ${r.statusText}`);
+  const r = await fetch(url(path), {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  if (!r.ok) {
+    const errBody = await readErrorBody(r);
+    throw new ApiHttpError(r.status, r.statusText, errBody);
+  }
   return (await r.json()) as T;
 }
+
 async function patchJson<T>(path: string, body: unknown): Promise<T> {
-  const r = await fetch(url(path), { method: "PATCH", headers: { "Content-Type":"application/json" }, body: JSON.stringify(body) });
-  if (!r.ok) throw new Error(`${r.status} ${r.statusText}`);
+  const r = await fetch(url(path), {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  if (!r.ok) {
+    const errBody = await readErrorBody(r);
+    throw new ApiHttpError(r.status, r.statusText, errBody);
+  }
   return (await r.json()) as T;
 }
+
 
 // 追加（どこでもOK、型定義の近くに）
 export type TempZone = 'ambient' | 'chilled' | 'frozen';
@@ -172,10 +233,7 @@ export async function searchShipments(params: { dateFrom?: string; dateTo?: stri
   if (params.dateTo) q.set('to', params.dateTo);
   if (params.vendorId) q.set('vendorId', params.vendorId);
   if (params.destinationId) q.set('destinationId', params.destinationId);
-  // const headers = await getJson<ApiShipmentHeader[]>("/shipments", {
-  //   from: params.dateFrom, to: params.dateTo,
-  //   vendorId: params.vendorId, destinationId: params.destinationId,
-  // });
+
   const headers = await getJson<ApiShipmentHeader[]>("/shipments", {
     from: params.dateFrom,
     to: params.dateTo,
@@ -293,10 +351,6 @@ export async function createShipment(payload: {
 
 export async function updateShipmentHeader(id: string, p: Partial<Pick<VendorOrderHeader,'deliveryDate'|'vendorId'|'destinationId'|'destinationName'|'status'>>) {
   await patchJson<unknown>(`/shipments/${id}`, p);
-}
-
-export async function saveLines(id: string, lines: VendorOrderLine[]) {
-  await postJson<unknown>(`/shipments/${id}/lines/bulk`, lines);
 }
 
 // --- 追加: 出荷の一括確定/取消（サーバ側 /shipments/confirm, /shipments/unconfirm を想定） ---
@@ -464,17 +518,6 @@ export type GenerateShipmentsParams = {
   dryRun?: boolean;
 };
 
-// export type GenerateShipmentsResult = {
-//   ok: boolean;
-//   createdHeaders: number; // 生成された（または対象となった）ヘッダ件数
-//   upsertedLines: number;  // 同じく明細件数
-//   preview?: {
-//     headers: number;
-//     lines: number;
-//   };
-//   // ★ 生成対象となった shipment.id 一覧（/generate の時だけ）
-//   generatedHeaderIds?: string[];
-// };
 export type GenerateShipmentsResult = {
   ok: boolean;
 
@@ -495,28 +538,23 @@ export type GenerateShipmentsResult = {
   linesAffected?: number;   // 本処理時: 対象明細数
   skippedHeaders?: number;  // 確定済みでスキップされたヘッダ数
   skippedLines?: number;    // 確定済みでスキップされた明細数
+  reasons?: GenerateShipmentsReasons; // ★追加
 
   // エラー時メッセージ（あれば）
   error?: string;
 };
 
-// サーバ生レスポンス用の補助型（any を避けるため）
-// type RawGenerateShipmentsResponse = {
-//   ok?: boolean;
-//   error?: string;
-//   nowHHmm?: string;
+export type GenerateShipmentsReasons = {
+  totalBaseLines?: number;
+  passedLines?: number;
+  excludedNotOrderable?: number;
+  excludedBeforeCutoff?: number;
+  missingUnitPrice?: number;
+  missingCutoffHHmm?: number;
+  missingOrderable?: number;
+};
 
-//   // プレビュー用
-//   countHeaders?: number;
-//   countLines?: number;
 
-//   // 本生成用
-//   headersAffected?: number;
-//   linesAffected?: number;
-
-//   // ★ 新規追加
-//   headerIds?: Array<number | string>;
-// };
 type RawGenerateShipmentsResponse = {
   ok?: boolean;
   error?: string;
@@ -540,6 +578,7 @@ type RawGenerateShipmentsResponse = {
 
   // 生成された shipment.id 一覧
   headerIds?: Array<number | string>;
+  reasons?: GenerateShipmentsReasons;
 };
 
 
@@ -575,21 +614,6 @@ export async function generateShipments(
   }
 
   // ★ プレビュー呼び出し（/preview）
-  // if (params.dryRun) {
-  //   const headers = raw.countHeaders ?? raw.headersAffected ?? 0;
-  //   const lines = raw.countLines ?? raw.linesAffected ?? 0;
-
-  //   return {
-  //     ok: true,
-  //     createdHeaders: headers,
-  //     upsertedLines: lines,
-  //     preview: {
-  //       headers,
-  //       lines,
-  //     },
-  //   };
-  // }
-  // ★ プレビュー呼び出し（/preview）
   if (params.dryRun) {
     const countHeaders = raw.countHeaders ?? raw.headersAffected ?? 0;
     const countLines = raw.countLines ?? raw.linesAffected ?? 0;
@@ -611,7 +635,7 @@ export async function generateShipments(
       linesAffected,
       skippedHeaders,
       skippedLines,
-
+      reasons: raw.reasons,
       preview: {
         headers: countHeaders,
         lines: countLines,
@@ -619,22 +643,6 @@ export async function generateShipments(
     };
   }
 
- // ★ 本生成呼び出し（/generate）
-  // const created = raw.headersAffected ?? raw.countHeaders ?? 0;
-  // const lines = raw.linesAffected ?? raw.countLines ?? 0;
-
-  // const generatedHeaderIds = Array.isArray(raw.headerIds)
-  //   ? raw.headerIds
-  //       .map((x) => String(x))
-  //       .filter((s) => s !== "")
-  //   : undefined;
-
-//   return {
-//     ok: true,
-//     createdHeaders: created,
-//     upsertedLines: lines,
-//     generatedHeaderIds,
-//   };
   // ★ 本生成呼び出し（/generate）
   const countHeaders = raw.countHeaders ?? raw.headersAffected ?? 0;
   const countLines = raw.countLines ?? raw.linesAffected ?? 0;
@@ -665,7 +673,7 @@ export async function generateShipments(
     linesAffected,
     skippedHeaders,
     skippedLines,
-
+    reasons: raw.reasons,
     generatedHeaderIds,
   };
 
