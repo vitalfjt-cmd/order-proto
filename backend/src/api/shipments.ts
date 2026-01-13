@@ -23,7 +23,7 @@ type ShipmentLineRow = {
   item_id: string;
   ordered_qty: number;
   ship_qty: number;
-  unit_price: number;
+  unitPrice: number;
   amount: number;
   unit: string | null;
   spec: string | null;
@@ -40,12 +40,26 @@ type ResolvedRow = {
   orderDate: string;     // 'YYYY-MM-DD'
   itemId: string;
   qty: number;
-  unitPrice: number | null; // 価格が見つからない場合あり
+
+  // 最終決定単価（resolvedで COALESCE した値）
+  unitPrice: number | null;
+
   deliveryDate: string;  // 'YYYY-MM-DD'
-    // 締切判定用（SQL側で埋める）
+
+  // 締切判定用（SQL側で埋める）
   orderable?: number | null;
   cutoffHHmm?: string | null;
+
+  // ★追加：order_lines から拾えた単価（NULLのことあり）
+  unitPriceRaw?: number | null;
+
+  // ★追加：item_prices からの補完単価（NULLのことあり）
+  unitPriceMaster?: number | null;
+
+  // ★追加：同一(伝票・品目)で単価が混在していたら 1
+  unitPriceInconsistent?: number | null;
 };
+
 
 // ===== 共通ヘルパ =====
 function ymd(date: Date): string {
@@ -91,9 +105,9 @@ function resolveUnitPriceOrThrow(args: {
   const { vendorId, deliveryDate, shipmentId, line } = args;
 
   // ① unitPrice が明示されているならそれを採用（0 も尊重）
-  const hasUnitPriceProp = hasOwn(line, "unitPrice") || hasOwn(line, "unit_price");
+  const hasUnitPriceProp = hasOwn(line, "unitPrice");
   if (hasUnitPriceProp) {
-    const v = line.unitPrice ?? line.unit_price;
+    const v = line.unitPrice;
     if (v === "" || v == null) {
       // 明示はされているが空：未指定扱いにしてマスタ引きへ
     } else {
@@ -135,16 +149,12 @@ function resolveUnitPriceOrThrow(args: {
 // ===== 一覧取得 (/shipments) =====
 // VendorShipments の検索で利用（snake_case で返す）
 shipments.get('/shipments', (req, res) => {
-  // 日付パラメータは 'YYYY-MM-DD' に丸めておく
   const df = String(req.query.from || '').slice(0, 10);
   const dt = String(req.query.to || '').slice(0, 10);
 
   const vendorId = req.query.vendorId ? ID.vendor(String(req.query.vendorId)) : '';
   const destinationId = req.query.destinationId ? ID.store(String(req.query.destinationId)) : '';
 
-  // 伝票番号（ヘッダID）検索
-  // - 数字だけを抜き出して Number に変換
-  // - "123" / "SHP-000123" どちらも 123 として扱う
   const headerIdRaw = String(req.query.headerId || '').trim();
   let headerId: number | null = null;
   if (headerIdRaw) {
@@ -156,29 +166,27 @@ shipments.get('/shipments', (req, res) => {
   }
 
   const where: string[] = [];
-  const params: any = {};
+  const params: Record<string, any> = {};
 
   if (df) {
-    // order_date が入っていない古いレコードは delivery_date で代用
-    where.push('COALESCE(s.order_date, s.delivery_date) >= @df');
+    where.push('s.delivery_date >= @df');
     params.df = df;
   }
   if (dt) {
-    where.push('COALESCE(s.order_date, s.delivery_date) <= @dt');
+    where.push('s.delivery_date <= @dt');
     params.dt = dt;
   }
   if (vendorId) {
-    where.push('s.vendor_id = @vid');
-    params.vid = vendorId;
+    where.push('s.vendor_id = @vendorId');
+    params.vendorId = vendorId;
   }
   if (destinationId) {
-    where.push('s.destination_id = @did');
-    params.did = destinationId;
+    where.push('s.destination_id = @destinationId');
+    params.destinationId = destinationId;
   }
   if (headerId != null) {
-    // 伝票番号での絞り込み（完全一致）
-    where.push('s.id = @hid');
-    params.hid = headerId;
+    where.push('s.id = @headerId');
+    params.headerId = headerId;
   }
 
   const whereSql = where.length ? `WHERE ${where.join(' AND ')}` : '';
@@ -186,39 +194,39 @@ shipments.get('/shipments', (req, res) => {
   const rows = db.prepare(
     `
     SELECT
-      s.id,
-      s.vendor_id,
-      v.name AS vendor_name,
-      s.destination_id,
-      s.destination_name,
-      s.order_date,
-      s.delivery_date,
-      COALESCE(s.order_date, s.delivery_date) AS order_date,  -- ★ 追加
-      s.status,
-      s.created_at,
-      s.updated_at
+      s.id               AS id,
+      COALESCE(s.order_date, s.delivery_date) AS orderDate,
+      s.delivery_date    AS deliveryDate,
+      s.status           AS status,
+      s.vendor_id        AS vendorId,
+      v.name             AS vendorName,
+      s.destination_id   AS destinationId,
+      st.name            AS destinationName,
+      s.created_at       AS createdAt,
+      s.updated_at       AS updatedAt
     FROM shipments s
     LEFT JOIN vendors v ON v.id = s.vendor_id
+    LEFT JOIN stores  st ON st.id = s.destination_id
     ${whereSql}
-    ORDER BY s.delivery_date, s.vendor_id, s.destination_id, s.id
+    ORDER BY s.delivery_date DESC, s.id DESC
     `
-  ).all(params) as (ShipmentHeaderRow & { vendor_name?: string | null })[];
+  ).all(params) as {
+    id: number;
+    orderDate: string;
+    deliveryDate: string;
+    status: string;
+    vendorId: string;
+    vendorName: string | null;
+    destinationId: string;
+    destinationName: string | null;
+    createdAt: string;
+    updatedAt: string;
+  }[];
 
-  const headers = rows.map(r => ({
-    id: r.id,
-    order_date: r.order_date ?? null,   // ★ 追加
-    delivery_date: r.delivery_date,
-    status: r.status,
-    vendor_id: r.vendor_id,
-    vendor_name: r.vendor_name ?? null,
-    destination_id: r.destination_id,
-    destination_name: r.destination_name ?? null,
-    created_at: r.created_at,
-    updated_at: r.updated_at,
-  }));
-
-  res.json(headers);
+  // ★ camel のまま返す
+  res.json(rows);
 });
+
 
 // ===== 伝票＋明細取得 (/shipments/:id) =====
 shipments.get('/shipments/:id', (req, res) => {
@@ -228,74 +236,49 @@ shipments.get('/shipments/:id', (req, res) => {
   const header = db.prepare(
     `
     SELECT
-      s.id,
-      s.vendor_id,
-      v.name AS vendor_name,
-      s.destination_id,
-      s.destination_name,
-      s.delivery_date,
-      s.status,
-      s.created_at,
-      s.updated_at
+      s.id               AS id,
+      COALESCE(s.order_date, s.delivery_date) AS orderDate,
+      s.delivery_date    AS deliveryDate,
+      s.status           AS status,
+      s.vendor_id        AS vendorId,
+      v.name             AS vendorName,
+      s.destination_id   AS destinationId,
+      st.name            AS destinationName,
+      s.created_at       AS createdAt,
+      s.updated_at       AS updatedAt
     FROM shipments s
     LEFT JOIN vendors v ON v.id = s.vendor_id
+    LEFT JOIN stores  st ON st.id = s.destination_id
     WHERE s.id = ?
     `
-  ).get(id) as (ShipmentHeaderRow & { vendor_name?: string | null }) | undefined;
+  ).get(id) as any;
 
   if (!header) return res.status(404).json({ error: 'not found' });
 
   const lines = db.prepare(
     `
     SELECT
-      l.id,
-      l.shipment_id,
-      l.item_id,
-      i.name AS item_name,
-      l.ordered_qty,
-      l.ship_qty,
-      l.unit_price,
-      l.amount,
-      l.unit,
-      l.spec,
-      l.temp_zone,
-      l.lot_no,
-      l.note
+      l.id            AS id,
+      l.shipment_id   AS headerId,
+      l.item_id       AS itemId,
+      it.name         AS itemName,
+      l.ordered_qty   AS orderedQty,
+      l.ship_qty      AS shipQty,
+      l.unit_price    AS unitPrice,
+      l.amount        AS amount,
+      l.unit          AS unit,
+      l.spec          AS spec,
+      l.temp_zone     AS tempZone,
+      l.lot_no        AS lotNo,
+      l.note          AS note
     FROM shipment_lines l
-    LEFT JOIN items i ON i.id = l.item_id
+    LEFT JOIN items it ON it.id = l.item_id
     WHERE l.shipment_id = ?
     ORDER BY l.id
     `
-  ).all(id) as (ShipmentLineRow & { item_name?: string | null })[];
+  ).all(id);
 
-  res.json({
-    header: {
-      id: header.id,
-      deliveryDate: header.delivery_date,
-      status: header.status,
-      vendorId: header.vendor_id,
-      vendorName: header.vendor_name ?? undefined,
-      destinationId: header.destination_id,
-      destinationName: header.destination_name ?? undefined,
-      createdAt: header.created_at,
-      updatedAt: header.updated_at,
-    },
-    lines: lines.map(l => ({
-      id: l.id,
-      shipment_id: l.shipment_id,
-      item_id: l.item_id,
-      item_name: l.item_name ?? null,
-      ordered_qty: l.ordered_qty,
-      ship_qty: l.ship_qty,
-      unit_price: l.unit_price,
-      amount: l.amount,
-      unit: l.unit,
-      spec: l.spec,
-      temp_zone: l.temp_zone,
-      lot_no: l.lot_no,
-      note: l.note,
-    })),
-  });
+  res.json({ header, lines }); // ★ camel のまま
 });
 
 // ===== 明細のみ (/shipments/:id/lines) =====
@@ -305,44 +288,43 @@ shipments.get('/shipments/:id/lines', (req, res) => {
 
   const lines = db.prepare(
     `
-    SELECT
-      l.id,
-      l.shipment_id,
-      l.item_id,
-      i.name AS item_name,
-      l.ordered_qty,
-      l.ship_qty,
-      l.unit_price,
-      l.amount,
-      l.unit,
-      l.spec,
-      l.temp_zone,
-      l.lot_no,
-      l.note
-    FROM shipment_lines l
-    LEFT JOIN items i ON i.id = l.item_id
-    WHERE l.shipment_id = ?
-    ORDER BY l.id
+      SELECT
+        l.id            AS id,
+        l.shipment_id   AS headerId,
+        l.item_id       AS itemId,
+        it.name         AS itemName,
+        l.ordered_qty   AS orderedQty,
+        l.ship_qty      AS shipQty,
+        l.unit_price    AS unitPrice,
+        l.amount        AS amount,
+        l.unit          AS unit,
+        l.spec          AS spec,
+        l.temp_zone     AS tempZone,
+        l.lot_no        AS lotNo,
+        l.note          AS note
+      FROM shipment_lines l
+      LEFT JOIN items it ON it.id = l.item_id
+      WHERE l.shipment_id = ?
+      ORDER BY l.id
     `
-  ).all(id) as (ShipmentLineRow & { item_name?: string | null })[];
+  ).all(id) as {
+    id: number;
+    headerId: number;
+    itemId: string;
+    itemName: string | null;
+    orderedQty: number | null;
+    shipQty: number | null;
+    unitPrice: number | null;
+    amount: number | null;
+    unit: string | null;
+    spec: string | null;
+    tempZone: string | null;
+    lotNo: string | null;
+    note: string | null;
+  }[];
 
-  res.json(
-    lines.map(l => ({
-      id: l.id,
-      shipment_id: l.shipment_id,
-      item_id: l.item_id,
-      item_name: l.item_name ?? null,
-      ordered_qty: l.ordered_qty,
-      ship_qty: l.ship_qty,
-      unit_price: l.unit_price,
-      amount: l.amount,
-      unit: l.unit,
-      spec: l.spec,
-      temp_zone: l.temp_zone,
-      lot_no: l.lot_no,
-      note: l.note,
-    })),
-  );
+  // ★ ここが重要：snake へ戻さない
+  res.json(lines);
 });
 
 // ===== 新規作成 (/shipments/create) =====
@@ -607,8 +589,8 @@ function replaceLinesInternal(shipmentId: number, rows: any[]) {
       const orderedQty = Number(r.orderedQty ?? r.ordered_qty ?? shipQty);
 
       // --- unitPrice 解決（NULLは禁止。解決できなければ 409） ---
-      const unitPriceProvided = hasOwn(r, "unitPrice") || hasOwn(r, "unit_price");
-      const rawUnitPrice = r.unitPrice ?? r.unit_price;
+      const unitPriceProvided = hasOwn(r, "unitPrice");
+      const rawUnitPrice = r.unitPrice;
 
       let unitPrice: number;
 
@@ -703,7 +685,7 @@ function handleReplaceLines(req: any, res: any, shipmentId: number, lines: any[]
     return res.status(500).json({ ok: false, error: String(e?.message ?? e) });
   }
 }
-
+// 更新
 shipments.post('/shipments/:id/lines/replace', (req, res) => {
   const id = Number(req.params.id);
   if (!Number.isFinite(id)) return res.status(400).json({ ok:false, error: 'invalid id' });
@@ -819,16 +801,19 @@ function generateShipmentsInternal(
         b.orderDate,
         ol.item_id AS itemId,
         SUM(ol.qty) AS qty,
-        (
-          SELECT ip.unit_price
-          FROM item_prices ip
-          WHERE ip.vendor_id = COALESCE(ol.vendor_id, b.headerVendorId)
-            AND ip.item_id   = ol.item_id
-            AND ip.valid_from <= b.orderDate
-            AND (ip.valid_to IS NULL OR ip.valid_to >= b.orderDate)
-          ORDER BY ip.valid_from DESC
-          LIMIT 1
-        ) AS unitPrice
+
+        MAX(CASE WHEN ol.unit_price IS NOT NULL AND ol.unit_price > 0 THEN ol.unit_price END) AS unitPriceRaw,
+
+        CASE
+          WHEN
+            MIN(CASE WHEN ol.unit_price IS NOT NULL AND ol.unit_price > 0 THEN ol.unit_price END)
+            IS NOT NULL
+            AND
+            MIN(CASE WHEN ol.unit_price IS NOT NULL AND ol.unit_price > 0 THEN ol.unit_price END)
+            <> MAX(CASE WHEN ol.unit_price IS NOT NULL AND ol.unit_price > 0 THEN ol.unit_price END)
+          THEN 1 ELSE 0
+        END AS unitPriceInconsistent
+
       FROM base b
       JOIN order_lines ol ON ol.order_id = b.orderId
       GROUP BY
@@ -906,8 +891,36 @@ function generateShipmentsInternal(
         itemId,
         qty,
 
-        unitPrice AS unitPriceRaw,
-        COALESCE(unitPrice, 0) AS unitPrice,
+        unitPriceRaw AS unitPriceRaw,
+        unitPriceInconsistent AS unitPriceInconsistent,
+
+        -- ★ 補完：item_prices（orderDate時点で有効な単価）
+        (
+          SELECT p.unit_price
+          FROM item_prices p
+          WHERE p.vendor_id = vendorId
+            AND p.item_id = itemId
+            AND p.valid_from <= orderDate
+            AND (p.valid_to IS NULL OR p.valid_to >= orderDate)
+          ORDER BY p.valid_from DESC
+          LIMIT 1
+        ) AS unitPriceMaster,
+
+        -- ★ 最終単価：order_lines → item_prices → 0（0は後段で409にする）
+        COALESCE(
+          unitPriceRaw,
+          (
+            SELECT p.unit_price
+            FROM item_prices p
+            WHERE p.vendor_id = vendorId
+              AND p.item_id = itemId
+              AND p.valid_from <= orderDate
+              AND (p.valid_to IS NULL OR p.valid_to >= orderDate)
+            ORDER BY p.valid_from DESC
+            LIMIT 1
+          ),
+          0
+        ) AS unitPrice,
 
         date(orderDate, printf('+%d day', COALESCE(lt, 1))) AS deliveryDate,
         orderable_raw AS orderable,
@@ -935,7 +948,23 @@ function generateShipmentsInternal(
         SUM(CASE WHEN COALESCE(orderable, 1) <> 1 THEN 1 ELSE 0 END) AS excludedNotOrderable,
         SUM(CASE WHEN orderable IS NULL THEN 1 ELSE 0 END) AS missingOrderable,
         SUM(CASE WHEN cutoffHHmm IS NULL THEN 1 ELSE 0 END) AS missingCutoffHHmm,
-        SUM(CASE WHEN unitPriceRaw IS NULL THEN 1 ELSE 0 END) AS missingUnitPrice,
+        SUM(CASE WHEN unitPriceInconsistent = 1 THEN 1 ELSE 0 END) AS inconsistentUnitPrice,
+        SUM(
+          CASE
+            WHEN unitPriceRaw IS NULL
+            AND (
+              SELECT p.unit_price
+              FROM item_prices p
+              WHERE p.vendor_id = vendorId
+                AND p.item_id = itemId
+                AND p.valid_from <= orderDate
+                AND (p.valid_to IS NULL OR p.valid_to >= orderDate)
+              ORDER BY p.valid_from DESC
+              LIMIT 1
+            ) IS NULL
+            THEN 1 ELSE 0
+          END
+        ) AS missingUnitPrice,
         SUM(CASE
               WHEN @asOf <> ''
                AND COALESCE(orderable, 1) = 1
@@ -1036,7 +1065,6 @@ function generateShipmentsInternal(
      WHERE vendor_id      = @vendorId
        AND destination_id = @destinationId
        AND delivery_date  = @deliveryDate
-       AND COALESCE(order_date, delivery_date) = @orderDate
     `
   );
 
@@ -1046,14 +1074,12 @@ function generateShipmentsInternal(
     const headerStatusMap = new Map<string, string>();
 
     for (const r of src) {
-      const key = `${r.vendorId}|${r.storeId}|${r.orderDate}|${r.deliveryDate}`;
-      // const key = `${r.vendorId}|${r.storeId}|${r.deliveryDate}`;
+      const key = `${r.vendorId}|${r.storeId}|${r.deliveryDate}`;
       if (!headerStatusMap.has(key)) {
         const existing = getHeader.get({
           vendorId: r.vendorId,
           destinationId: r.storeId,
           deliveryDate: r.deliveryDate,
-          orderDate: r.orderDate,
         }) as { id?: number; status?: string } | undefined;
         headerStatusMap.set(key, existing?.status ?? "none");
       }
@@ -1064,8 +1090,7 @@ function generateShipmentsInternal(
     let skippedLines = 0;
 
     for (const r of src) {
-      const key = `${r.vendorId}|${r.storeId}|${r.orderDate}|${r.deliveryDate}`;
-      // const key = `${r.vendorId}|${r.storeId}|${r.deliveryDate}`;
+      const key = `${r.vendorId}|${r.storeId}|${r.deliveryDate}`;
       const status = headerStatusMap.get(key) ?? "none";
 
       // 確定済みヘッダに紐づく明細はプレビューでも「生成対象外」
@@ -1154,8 +1179,7 @@ function generateShipmentsInternal(
 
   const tx = db.transaction(() => {
     for (const r of src) {
-      // const key = `${r.vendorId}|${r.storeId}|${r.deliveryDate}`;
-      const key = `${r.vendorId}|${r.storeId}|${r.orderDate}|${r.deliveryDate}`;
+      const key = `${r.vendorId}|${r.storeId}|${r.deliveryDate}`;
 
       let headerId = headerKeyToId.get(key);
       let status = headerKeyToStatus.get(key);
@@ -1165,7 +1189,6 @@ function generateShipmentsInternal(
           vendorId: r.vendorId,
           destinationId: r.storeId,
           deliveryDate: r.deliveryDate,
-          orderDate: r.orderDate,
         }) as { id?: number; status?: string } | undefined;
 
         if (existing?.id) {
@@ -1189,7 +1212,6 @@ function generateShipmentsInternal(
             vendorId: r.vendorId,
             destinationId: r.storeId,
             deliveryDate: r.deliveryDate,
-            orderDate: r.orderDate,
           }) as { id: number; status?: string };
 
           headerId = h.id;
@@ -1211,6 +1233,38 @@ function generateShipmentsInternal(
 
       const unitPrice = Number(r.unitPrice ?? 0);
       const qty = Number(r.qty ?? 0);
+
+      // ★ 単価混在（想定外）なら止める
+      if (Number(r.unitPriceInconsistent ?? 0) === 1) {
+        throw new ApiError(409, {
+          ok: false,
+          error: 'unit_price_inconsistent_on_order_lines',
+          message: `同一(伝票・品目)で単価が混在しています（vendor=${r.vendorId}, store=${r.storeId}, orderDate=${r.orderDate}, item=${r.itemId}）`,
+          vendorId: r.vendorId,
+          storeId: r.storeId,
+          orderDate: r.orderDate,
+          itemId: r.itemId,
+          unitPriceRaw: r.unitPriceRaw ?? null,
+          unitPriceMaster: r.unitPriceMaster ?? null,
+        });
+      }
+
+      // ★ 欠損/0円（qty>0ならNG）
+      if (qty > 0 && (!Number.isFinite(unitPrice) || unitPrice <= 0)) {
+        throw new ApiError(409, {
+          ok: false,
+          error: 'unit_price_missing_on_generate',
+          message: `単価が未設定/不正です（vendor=${r.vendorId}, store=${r.storeId}, orderDate=${r.orderDate}, item=${r.itemId}）`,
+          vendorId: r.vendorId,
+          storeId: r.storeId,
+          orderDate: r.orderDate,
+          itemId: r.itemId,
+          unitPrice,
+          unitPriceRaw: r.unitPriceRaw ?? null,
+          unitPriceMaster: r.unitPriceMaster ?? null,
+        });
+      }
+
       const amount = unitPrice * qty;
 
       const rr = insLine.run({
@@ -1266,13 +1320,16 @@ shipments.post('/shipments/generate/preview', (req, res) => {
 shipments.post('/shipments/generate', (req, res) => {
   try {
     const result = generateShipmentsInternal(req.body ?? {}, false);
-    res.json(result);
+    return res.json(result);
   } catch (e: any) {
     console.error('[shipments/generate] failed', e);
-    // res.status(500).json({ ok: false, error: 'internal_error' });
-    res.status(500).json({
-      ok: false,
-      error: e?.message || String(e),
-    });
+
+    // ★ ApiError をそのまま返す
+    if (e && typeof e === 'object' && 'status' in e && 'body' in e) {
+      return res.status((e as any).status).json((e as any).body);
+    }
+
+    return res.status(500).json({ ok: false, error: e?.message || String(e) });
   }
 });
+

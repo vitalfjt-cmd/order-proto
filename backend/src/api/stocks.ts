@@ -487,7 +487,7 @@ stocks.post("/monthly-adjust", (req, res) => {
     `;
     
     const findLastUnitCostStmt = db.prepare(`
-      SELECT unit_cost
+      SELECT unit_cost AS unitCost
       FROM store_stock_movements
       WHERE store_id = @storeId
         AND item_id = @itemId
@@ -507,8 +507,8 @@ stocks.post("/monthly-adjust", (req, res) => {
           // 優先順位：①入力unitCost ②直近movementのunit_cost
           let unitCost = Number(ln.unitCost ?? NaN);
           if (!(Number.isFinite(unitCost) && unitCost > 0)) {
-            const r = findLastUnitCostStmt.get({ storeId, itemId: ln.itemId }) as { unit_cost?: any } | undefined;
-            const last = Number(r?.unit_cost);
+            const r = findLastUnitCostStmt.get({ storeId, itemId: ln.itemId }) as { unitCost?: any } | undefined;
+            const last = Number(r?.unitCost);
             unitCost = (Number.isFinite(last) && last > 0) ? last : NaN;
           }
           if (!(Number.isFinite(unitCost) && unitCost > 0)) {

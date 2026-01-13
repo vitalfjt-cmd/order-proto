@@ -1,5 +1,5 @@
-// src/vendor/pickingPdf.ts
-import type { VendorOrderHeader, VendorOrderLine } from "./apiVendor";
+// src/reports/pdf/pickingPdf.ts
+import type { VendorOrderHeader, VendorOrderLine } from "../../vendor/apiVendor";
 
 /** 並び順: 納品先ID → 温度帯 → 品目コード（CSVと揃える） */
 function sortLines(headers: VendorOrderHeader[], lines: VendorOrderLine[]) {

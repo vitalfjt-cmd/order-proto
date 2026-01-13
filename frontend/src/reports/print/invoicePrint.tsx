@@ -1,6 +1,6 @@
-// src/vendor/invoicePrint.tsx
+// src/reports/print/invoicePrint.tsx
 import React from "react";
-import type { VendorOrderHeader, VendorOrderLine, TempZone } from "./apiVendor";
+import type { VendorOrderHeader, VendorOrderLine, TempZone } from "../../vendor/apiVendor";
 
 /** 会社情報（必要に応じて編集してください） */
 const COMPANY = {

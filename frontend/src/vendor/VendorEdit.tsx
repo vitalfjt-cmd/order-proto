@@ -1,9 +1,8 @@
 import React, { useEffect, useMemo, useState } from "react";
 import type { VendorOrderLine, VendorOrderHeader, TempZone, MasterItem, MasterStore, MasterVendor } from "./apiVendor";
-
+import { ymd } from "../utils/date"
 import {
   getShipment,
-  listItems,
   listStores,
   deleteLine,
   listVendorItems,
@@ -39,7 +38,6 @@ export function VendorEdit({ headerId, onBack, initialVendorId }: Props) {
     destinationId: "",
     destinationName: "",
   });
-  const [masterItems, setMasterItems] = useState<MasterItem[]>([]);
   const [vendorItems, setVendorItems] = useState<MasterItem[]>([]);
   const [stores, setStores] = useState<MasterStore[]>([]);
   const [itemModalOpen, setItemModalOpen] = useState(false);
@@ -48,16 +46,10 @@ export function VendorEdit({ headerId, onBack, initialVendorId }: Props) {
   const [storeFilter, setStoreFilter] = useState('');
   const [vendors, setVendors] = useState<MasterVendor[]>([]);
   const [vendorFilter, setVendorFilter] = useState('');
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars
   const [vendorModalOpen, setVendorModalOpen] = useState(false);
   const [activeRow, setActiveRow] = useState<number | null>(null);
   const [saving, setSaving] = useState(false);
 
-  // 初期ロード（品目・納品先マスタ）
-  useEffect(() => { (async () => {
-    setMasterItems(await listItems());
-    setStores(await listStores());
-  })(); }, []);
 
   useEffect(() => {
   if (!vendorModalOpen) return;
@@ -96,7 +88,7 @@ export function VendorEdit({ headerId, onBack, initialVendorId }: Props) {
         }
         setHeader(null);
         setHeaderDraft({
-          deliveryDate: new Date().toISOString().slice(0,10),
+          deliveryDate: ymd(new Date()),
           vendorId: vendorInit,
           destinationId: "",
           destinationName: "",
@@ -106,11 +98,8 @@ export function VendorEdit({ headerId, onBack, initialVendorId }: Props) {
       }
 
       // === 既存伝票モード ===
-      // const s = await getShipment(headerId);   // ← これが必要
-      const s = await getShipment(headerIdUse);   // ← これが必要
+      const s = await getShipment(headerIdUse);
       setHeader(s.header ?? null);
-      // setHeader(s.header);
-      // setLines(s.lines);
       setLines(s.lines ?? []);
       if (s.header) {
         setHeaderDraft({
@@ -124,16 +113,7 @@ export function VendorEdit({ headerId, onBack, initialVendorId }: Props) {
   // }, [headerId, isNew]);
   }, [headerIdUse, isNew]);
 
-// 追加：モーダルが開いたら未取得なら再取得
   useEffect(() => {
-    (async () => {
-      if (itemModalOpen && masterItems.length === 0) {
-        setMasterItems(await listItems());
-      }
-    })();
-  }, [itemModalOpen]);
-
-    useEffect(() => {
     const vid = (header?.vendorId || headerDraft.vendorId || '').trim();
     if (!vid) { setVendorItems([]); return; }
     (async () => {
@@ -165,8 +145,7 @@ export function VendorEdit({ headerId, onBack, initialVendorId }: Props) {
     [lines]
   );
 
-  const itemsForPick = vendorItems.length > 0 ? vendorItems : masterItems;
-
+  const itemsForPick: MasterItem[] = vendorItems;
   const buildLinesForSave = (): VendorOrderLine[] => {
     const hid = isNew ? "new" : headerIdUse;
 
@@ -251,10 +230,6 @@ export function VendorEdit({ headerId, onBack, initialVendorId }: Props) {
           return;
         }
 
-        // 採番後IDへ遷移（同一画面のまま編集モードへ）
-        // const base = location.hash.split("?")[0];
-        // location.hash = `${base}?id=${newId}`;
-
         // 最新を再読込して画面に反映
         const s = await getShipment(newId);
         setHeader(s.header ?? null);
@@ -263,8 +238,6 @@ export function VendorEdit({ headerId, onBack, initialVendorId }: Props) {
         alert("保存しました。");
         onBack?.();
         location.hash = buildBackToListHash(newId);
-        // onBack?.();
-        // location.hash = "#/vendor/shipments";
         return;
       }
 
@@ -273,7 +246,6 @@ export function VendorEdit({ headerId, onBack, initialVendorId }: Props) {
 
       await updateShipmentHeader(id, {
         deliveryDate,
-        // orderDate: deliveryDate, // サーバが必要なら。不要なら消してOK
         vendorId,
         destinationId,
         destinationName,
@@ -438,7 +410,8 @@ export function VendorEdit({ headerId, onBack, initialVendorId }: Props) {
                   onFocus={() => setActiveRow(i)}
                   onChange={(e) => {
                     const v = e.target.value.trim();
-                    const m = itemsForPick.find(x => x.id === v);
+                    // const m = itemsForPick.find(x => x.id === v);
+                    const m = itemsForPick.find((x: MasterItem) => x.id === v);
                     setLines(prev => prev.map((x, idx) => {
                       if (idx !== i) return x;
                       return m ? {
@@ -550,8 +523,7 @@ export function VendorEdit({ headerId, onBack, initialVendorId }: Props) {
         </table> 
       </div>
       <datalist id="master-items">
-        {/* {masterItems.map(m => ( */}
-        {itemsForPick.map(m => (
+        {itemsForPick.map((m: MasterItem) => (
           <option key={m.id} value={m.id}>{m.name}</option>
         ))}
       </datalist>
@@ -645,14 +617,13 @@ export function VendorEdit({ headerId, onBack, initialVendorId }: Props) {
                 </tr>
               </thead>
               <tbody>
-                {/* {masterItems.length === 0 && ( */}
                 {(itemsForPick.length === 0) && (
-                  <tr><td className="px-2 py-2 text-slate-500" colSpan={5}>マスタ0件（/master/items）</td></tr>
+                  <tr><td className="px-2 py-2 text-slate-500" colSpan={5}>品目マスタがありません</td></tr>
                 )}
-                {/* {masterItems */}
+
                 {itemsForPick
-                  .filter(m => (m.id + (m.name||'') + (m.spec||'')).includes(itemFilter))
-                  .map(m => (
+                  .filter((m: MasterItem) => (m.id + (m.name||'') + (m.spec||'')).includes(itemFilter))
+                  .map((m: MasterItem) => (
                     <tr key={m.id} className="cursor-pointer hover:bg-slate-50"
                         onClick={() => {
                           setLines(prev => {

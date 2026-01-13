@@ -1,5 +1,5 @@
-// src/vendor/deliveryNote.ts
-import type { VendorOrderHeader, VendorOrderLine } from "./apiVendor";
+// src/reports/print/deliveryNote.ts
+import type { VendorOrderHeader, VendorOrderLine } from "../../vendor/apiVendor";
 
 export function openDeliveryNotePrint(header: VendorOrderHeader, lines: VendorOrderLine[]) {
   const rows = lines.filter(l => (l.shipQty ?? 0) > 0);

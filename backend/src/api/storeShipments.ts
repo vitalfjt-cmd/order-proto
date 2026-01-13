@@ -29,8 +29,8 @@ type StoreShipmentLineRow = {
   qty: number;
   unit: string | null;
   memo: string | null;
-  unit_cost: number; // 追加
-  amount: number;    // 追加
+  unitCost: number;
+  amount: number;
 };
 
 // ===================================
@@ -232,7 +232,7 @@ storeShipments.get('/store/shipments/:id', (req, res) => {
         l.qty,
         l.unit,
         l.memo,
-        l.unit_cost,
+        l.unit_cost AS unitCost,
         l.amount,
         i.name AS item_name
       FROM store_shipment_lines l
@@ -241,24 +241,6 @@ storeShipments.get('/store/shipments/:id', (req, res) => {
       ORDER BY l.line_no ASC, l.id ASC
     `
   ).all(header.id) as any[];
-
-  // const lines = db.prepare(
-  //   `
-  //     SELECT
-  //       id,
-  //       header_id,
-  //       line_no,
-  //       item_id,
-  //       qty,
-  //       unit,
-  //       memo,
-  //       unit_cost,
-  //       amount
-  //     FROM store_shipment_lines
-  //     WHERE header_id = ?
-  //     ORDER BY line_no ASC, id ASC
-  //   `
-  // ).all(header.id) as StoreShipmentLineRow[];
 
   res.json({
     header: {
@@ -416,7 +398,7 @@ storeShipments.post('/store/shipments/save', (req, res) => {
 
       headerId = Number(hr.lastInsertRowid);
     }
-    // 追加 ここから
+
     // 明細登録の直前に追加
     const itemIds = Array.from(new Set(lines.map(l => l.itemId)));
     const placeholders2 = itemIds.map(() => "?").join(",");
@@ -464,22 +446,6 @@ storeShipments.post('/store/shipments/save', (req, res) => {
       };
       throw err;
     }
-    // unit_cost が取れない品目は 409（= 入庫が無いので移動不可）
-    // const missing = itemIds.filter(id => !Number.isFinite(costMap.get(id) as any) || Number(costMap.get(id)) <= 0);
-    // if (missing.length > 0) {
-    //   // better-sqlite3 tx を中断させるため throw
-    //   const err: any = new Error("unit_cost_missing");
-    //   err.status = 409;
-    //   err.body = {
-    //     ok: false,
-    //     error: "unit_cost_missing",
-    //     message: "入庫（単価履歴）が無い品目があるため、店舗移動を保存できません。先に入庫を作ってください。",
-    //     itemIds: missing.sort(),
-    //     fromStoreId,
-    //   };
-    //   throw err;
-    // }
-    // 追加 ここまで
 
     // 明細登録
     const insLine = db.prepare(
@@ -491,7 +457,7 @@ storeShipments.post('/store/shipments/save', (req, res) => {
           qty,
           unit,
           memo,
-          unit_cost,
+          unit_cost AS unitCost,
           amount
         )
         VALUES (
@@ -522,22 +488,6 @@ storeShipments.post('/store/shipments/save', (req, res) => {
         amount,
       });
     });
-    // lines.forEach((ln, idx) => {
-    //   const unitCost = Number(costMap.get(ln.itemId) ?? 0);
-    //   const amount = Number(ln.qty) * unitCost; // qty は在庫単位前提
-
-    //   insLine.run({
-    //     headerId,
-    //     lineNo: idx + 1,
-    //     itemId: ln.itemId,
-    //     qty: ln.qty,
-    //     unit: ln.unit,
-    //     memo: ln.memo,
-    //     unitCost,
-    //     amount,
-    //   });
-    // });
-
     return headerId;
   });
 
@@ -673,7 +623,7 @@ storeShipments.post('/store/shipments/confirm', (req, res) => {
           ref_type,
           ref_id,
           memo,
-          unit_cost,
+          unit_cost AS unitCost,
           amount,
           created_at,
           updated_at

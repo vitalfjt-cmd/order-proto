@@ -1,5 +1,5 @@
-// src/vendor/pickingPrint.ts
-import type { VendorOrderHeader, VendorOrderLine } from "./apiVendor";
+// src/reports/print/pickingPrint.ts
+import type { VendorOrderHeader, VendorOrderLine } from "../../vendor/apiVendor";
 
 // 既存の「フラット型」ピッキングPDF（そのまま残してあります）
 export function openPickingPrint(

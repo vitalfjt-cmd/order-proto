@@ -231,19 +231,6 @@ ordering.get('/entry', (req, res) => {
       });
     }
 
-    // for (const r of filteredByVendorRule) {
-    //   const up = pickUnitPrice(r.vendor_id, r.item_id, businessDate);
-    //   const fallback = existingLinesMap[r.item_id];
-    //   mergedLines.push({
-    //     lineId: `ln-${r.item_id}`,
-    //     itemId: r.item_id,
-    //     qty: fallback ? fallback.qty : 0,
-    //     unitPrice: up ?? 0,
-    //     vendorId: r.vendor_id,
-    //     expectedArrivalDate: fallback ? fallback.expectedArrivalDate : null,
-    //   });
-    // }
-
     // 8) 画面側ステータス
     let editable = true;
     let reason = '';
@@ -549,6 +536,50 @@ ordering.post('/submit', (req, res) => {
   const tax = Math.round(subtotal * taxRate);
   const total = subtotal + tax;
 
+  // ---- 締めガード（サーバ側でも強制）----
+  // vendorMode=all で vendorId が無い行は締め判定できないため 400 で弾く
+  if (vendorMode === 'all' && normalizedLines.some((l) => !l.vendorId)) {
+    return res.status(400).json({
+      status: 'error',
+      error: 'vendor_id_missing',
+      message: "vendorMode='all' の場合、全行に vendorId が必要です。",
+    });
+  }
+
+  // JST(+09:00) 前提で cutoffAt を計算（締めが 04:00 以前なら翌日扱い）
+  const normalizeHHmm = (v: unknown, fallback = '04:00'): string => {
+    if (typeof v !== 'string' || !v.trim()) return fallback;
+    const m = v.trim().match(/^(\d{1,2}):(\d{2})$/);
+    if (!m) return fallback;
+    const hh = Math.min(23, Math.max(0, parseInt(m[1], 10)));
+    const mm = Math.min(59, Math.max(0, parseInt(m[2], 10)));
+    return `${String(hh).padStart(2, '0')}:${String(mm).padStart(2, '0')}`;
+  };
+
+  const addDaysJst = (ymdStr: string, days: number): string => {
+    const d = new Date(`${ymdStr}T00:00:00+09:00`);
+    d.setDate(d.getDate() + days);
+    const yyyy = d.getFullYear();
+    const mm = String(d.getMonth() + 1).padStart(2, '0');
+    const dd = String(d.getDate()).padStart(2, '0');
+    return `${yyyy}-${mm}-${dd}`;
+  };
+
+  const getCutoffAtJst = (orderYmd: string, hhmm: string): Date => {
+    const [hhS, mmS] = hhmm.split(':');
+    const hh = parseInt(hhS, 10);
+    const mm = parseInt(mmS, 10);
+    const minutes = hh * 60 + mm;
+    const ymdForCutoff = minutes <= 4 * 60 ? addDaysJst(orderYmd, 1) : orderYmd;
+    return new Date(`${ymdForCutoff}T${String(hh).padStart(2,'0')}:${String(mm).padStart(2,'0')}:00+09:00`);
+  };
+
+  const weekdayKey = (orderYmd: string): 'sun'|'mon'|'tue'|'wed'|'thu'|'fri'|'sat' => {
+    const dow = new Date(`${orderYmd}T00:00:00+09:00`).getDay(); // 0..6
+    return (['sun','mon','tue','wed','thu','fri','sat'] as const)[dow];
+  };
+ 
+
   // ---- 簡易 idempotency（同じ内容なら同じ orderId になる）----
   const key = {
     storeId,
@@ -575,6 +606,46 @@ ordering.post('/submit', (req, res) => {
   try {
     // const now = new Date().toISOString();
     const now = nowTimestampJst();  // ← ここだけ差し替え
+
+    // ---- 締め判定（DB の曜日別ルール + 店舗上書き）----
+    const key = weekdayKey(orderDate); // 'sun'..'sat'
+    // 列名は固定の7種のみ（キーを検証してから埋め込み）
+    const cutoffSql = `
+      SELECT
+        COALESCE(
+          (SELECT cutoff_hhmm_${key}_override
+            FROM store_vendor_overrides o
+            WHERE o.store_id = ? AND o.vendor_id = ?),
+          (SELECT cutoff_hhmm_${key}
+            FROM vendor_weekly_rules v
+            WHERE v.vendor_id = ?)
+        ) AS cutoffHHmm
+    `;
+    const cutoffStmt = db.prepare(cutoffSql);
+
+    const vendorSet = new Set<string>();
+    for (const l of normalizedLines) {
+      if (l.vendorId) vendorSet.add(l.vendorId);
+    }
+
+    const nowMs = Date.now();
+    const blocked: Array<{ vendorId: string; cutoffHHmm: string; cutoffAt: string }> = [];
+    for (const vendorId of vendorSet) {
+      const row = cutoffStmt.get(storeId, vendorId, vendorId) as { cutoffHHmm?: string | null } | undefined;
+      const cutoffHHmm = normalizeHHmm(row?.cutoffHHmm ?? '04:00', '04:00');
+      const cutoffAt = getCutoffAtJst(orderDate, cutoffHHmm);
+      if (nowMs > cutoffAt.getTime()) {
+        blocked.push({ vendorId, cutoffHHmm, cutoffAt: cutoffAt.toISOString() });
+      }
+    }
+    if (blocked.length > 0) {
+      return res.status(409).json({
+        status: 'error',
+        error: 'cutoff_passed',
+        message: '締め時間を過ぎているため、送信できません。',
+        blocked,
+      });
+    }
 
     // 既存注文（同一ビジネスキー）があるか？
     const existing = db

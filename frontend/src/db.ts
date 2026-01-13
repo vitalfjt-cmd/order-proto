@@ -7,7 +7,8 @@ export type OrderStatus = "draft" | "confirmed";
 
 export interface PersistedOrderDraft {
 id: string; // 主キー（storeId|vendorMode|vendorId|requestDate）
-payload: any; // OrderDraft（App.tsx 側の型）
+// payload: any; // OrderDraft（App.tsx 側の型）
+payload: unknown; // 発注ドラフト（画面側で型付けして扱う）
 status: OrderStatus; // draft / confirmed
 updatedAt: string; // ISO string
 }

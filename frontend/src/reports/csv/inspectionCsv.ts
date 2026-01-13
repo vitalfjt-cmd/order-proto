@@ -1,6 +1,6 @@
-// src/vendor/inspectionCsv.ts
-import { toCsvString } from "../utils/csv";
-import type { VendorOrderHeader, VendorOrderLine } from "./apiVendor";
+// frontend/src/reports/csv/inspectionCsv.ts
+import { toCsvString } from "../../utils/csv";
+import type { VendorOrderHeader, VendorOrderLine } from "../../vendor/apiVendor";
 
 /** 伝票No（暫定）：納品日-納品先ID-ベンダーID */
 function buildSlipNo(h: VendorOrderHeader): string {
@@ -22,7 +22,7 @@ export function buildInspectionCsv(
 ): string {
   const withHeader = opts?.includeHeader ?? true;
   const delimiter = opts?.delimiter ?? ",";
-  const nowIso = new Date().toISOString();
+  const nowIso = new Date().toISOString(); // タイムスタンプなのでUTCでOK
 
   const hMap = new Map(headers.map((h) => [h.id, h]));
   const allow = new Set(headerIds);
@@ -53,8 +53,8 @@ export function buildInspectionCsv(
     const inspectQty = ln.shipQty; // 現状は同値。将来は検品入力値へ置換
 
     rows.push([
-      h.id,             // 出荷ID
-      slipNo,           // 伝票No
+      h.id, // 出荷ID
+      slipNo,
       h.deliveryDate,
       h.vendorId,
       h.destinationId,

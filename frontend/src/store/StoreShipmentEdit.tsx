@@ -1,6 +1,7 @@
 // frontend/src/store/StoreShipmentEdit.tsx
 import React, { useEffect, useState } from "react";
 import { toCsvString, downloadCsv } from "../utils/csv";
+import { ymd } from "../utils/date"
 import {
   fetchStoreShipmentDetail,
   saveStoreShipment,
@@ -29,11 +30,9 @@ type LineForm = {
 };
 
 export function StoreShipmentEdit({ storeId, headerId, onBack }: Props) {
-  const today = new Date().toISOString().slice(0, 10);
-
+  const today = ymd(new Date());
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
-
   const [shipmentDate, setShipmentDate] = useState(today);
   const [movementType, setMovementType] =
     useState<StoreShipmentMovementType>("TRANSFER");

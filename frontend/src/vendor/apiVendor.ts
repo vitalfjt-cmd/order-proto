@@ -1,30 +1,34 @@
 // --- API raw types (from backend v_* views) -----------------
 export type ApiShipmentHeader = {
-  id: number;
-  order_date: string;
-  delivery_date: string;
-  status: 'open' | 'confirmed' | 'canceled';
-  vendor_id: string;
-  vendor_name?: string | null;
-  destination_id: string;
-  destination_name?: string | null;
-  created_at: string;
-  updated_at: string;
+  id: number | string;
+  orderDate: string;
+  deliveryDate: string;
+  status: "open" | "confirmed" | "canceled";
+  vendorId: string;
+  vendorName?: string | null;
+  destinationId: string;
+  destinationName?: string | null;
 };
 
 export type ApiShipmentLine = {
-  id: number;
-  shipment_id: number;
-  item_id: string;
-  item_name?: string | null;
-  ordered_qty: number | null;
-  ship_qty: number | null;
-  unit_price: number | null;
-  amount: number | null;
+  id: number | string;
+  headerId?: number | string;
+
+  itemId: string;
+  itemName?: string | null;
+
+  orderedQty?: number | null;
+  shipQty?: number | null;
+
+  unitPrice?: number | null;
+  amount?: number | null;
+
   unit?: string | null;
   spec?: string | null;
-  temp_zone?: 'ambient' | 'chilled' | 'frozen' | null;
-  lot_no?: string | null;
+
+  tempZone?: TempZone | null;
+
+  lotNo?: string | null;
   note?: string | null;
 };
 
@@ -59,67 +63,56 @@ export type MasterVendor = {
   name: string;   // ★ これを追加
 };
 
+type ShipmentStatus = "open" | "confirmed" | "canceled";
+type TempZone = "ambient" | "chilled" | "frozen";
 
-// サーバ応答（camel / snake 両対応）の生型定義
-type RawHeaderCamel = {
-  id: number;
-  orderDate: string;
-  deliveryDate: string;
-  status: 'open'|'confirmed'|'canceled';
-  vendorId: string;
-  vendorName?: string | null;
-  destinationId: string;
-  destinationName?: string | null;
-};
-type RawHeaderSnake = {
-  id: number;
-  order_date: string;
-  delivery_date: string;
-  status: 'open'|'confirmed'|'canceled';
-  vendor_id: string;
-  vendor_name?: string | null;
-  destination_id: string;
-  destination_name?: string | null;
-};
+function isShipmentStatus(v: unknown): v is ShipmentStatus {
+  return v === "open" || v === "confirmed" || v === "canceled";
+}
 
-type RawLineCamel = {
-  id: number;
-  lineId?: string|number;
-  headerId?: string|number;
-  shipment_id?: number;
-  itemId: string;
-  itemName?: string | null;
-  orderedQty?: number | null;
-  shipQty?: number | null;
-  unitPrice?: number | null;
-  amount?: number | null;
-  unit?: string | null;
-  spec?: string | null;
-  tempZone?: TempZone | null;
-  lotNo?: string | null;
-  note?: string | null;
-};
-type RawLineSnake = {
-  id: number;
-  lineId?: string|number;
-  headerId?: string|number;
-  shipment_id?: number;
-  item_id: string;
-  item_name?: string | null;
-  ordered_qty?: number | null;
-  ship_qty?: number | null;
-  unit_price?: number | null;
-  amount?: number | null;
-  unit?: string | null;
-  spec?: string | null;
-  temp_zone?: TempZone | null;
-  lot_no?: string | null;
-  note?: string | null;
-};
+function isTempZone(v: unknown): v is TempZone {
+  return v === "ambient" || v === "chilled" || v === "frozen";
+}
 
-type GetShipmentResponse = {
-  header: RawHeaderCamel | RawHeaderSnake | null;
-  lines: Array<RawLineCamel | RawLineSnake> | null;
+function toShipmentStatus(v: unknown): ShipmentStatus {
+  // ここは “不正値は落とす” のが気持ち悪さゼロ
+  if (!isShipmentStatus(v)) throw new Error(`invalid shipment status: ${String(v)}`);
+  return v;
+}
+
+function toTempZoneOrUndef(v: unknown): TempZone | undefined {
+  if (v == null || v === "") return undefined;
+  if (!isTempZone(v)) throw new Error(`invalid tempZone: ${String(v)}`);
+  return v;
+}
+
+export type GetShipmentResponse = {
+  header?: {
+    id: number | string;
+    orderDate: string;
+    deliveryDate: string;
+    status: string;
+    vendorId: string;
+    vendorName?: string | null;
+    destinationId: string;
+    destinationName?: string | null;
+  };
+  lines?: Array<{
+    id?: number;
+    lineId?: number;
+    headerId?: number | string;
+    itemId?: string;
+    itemName?: string | null;
+    orderedQty?: number;
+    shipQty?: number;
+    unitPrice?: number | null;
+    amount?: number | null;
+    unit?: string | null;
+    spec?: string | null;
+    tempZone?: string | null;
+    lotNo?: string | null;
+    note?: string | null;
+  }>;
 };
 
 export type MasterStore = { id: string; name?: string | null };
@@ -222,119 +215,112 @@ async function patchJson<T>(path: string, body: unknown): Promise<T> {
   return (await r.json()) as T;
 }
 
-
-// 追加（どこでもOK、型定義の近くに）
-export type TempZone = 'ambient' | 'chilled' | 'frozen';
-
 // 一覧＋明細まとめ取得（ピッキングなどで使う）
-export async function searchShipments(params: { dateFrom?: string; dateTo?: string; vendorId?: string; destinationId?: string; headerId?: string }) {
-  const q = new URLSearchParams();
-  if (params.dateFrom) q.set('from', params.dateFrom);
-  if (params.dateTo) q.set('to', params.dateTo);
-  if (params.vendorId) q.set('vendorId', params.vendorId);
-  if (params.destinationId) q.set('destinationId', params.destinationId);
-
+export async function searchShipments(params: {
+  dateFrom?: string;
+  dateTo?: string;
+  vendorId?: string;
+  destinationId?: string;
+  headerId?: string;
+}) {
   const headers = await getJson<ApiShipmentHeader[]>("/shipments", {
     from: params.dateFrom,
     to: params.dateTo,
     vendorId: params.vendorId,
     destinationId: params.destinationId,
-    headerId: params.headerId, // ★ 伝票番号（ヘッダID）検索を追加
+    headerId: params.headerId,
   });
-  // 必要に応じて各伝票の明細も取りにいく（最小：一覧だけ返す）
+
   const lines: VendorOrderLine[] = [];
   for (const h of headers) {
-    // const r2 = await fetch(`/shipments/${h.id}/lines`);
     const ls = await getJson<ApiShipmentLine[]>(`/shipments/${h.id}/lines`);
-      lines.push(
-        ...ls.map((x): VendorOrderLine => ({
+    lines.push(
+      ...ls.map(
+        (x): VendorOrderLine => ({
           lineId: String(x.id),
           headerId: String(h.id),
-          itemId: x.item_id,
-          itemName: x.item_name ?? '',
-          orderedQty: Number(x.ordered_qty ?? 0),
-          shipQty: Number(x.ship_qty ?? 0),
-          unitPrice: Number(x.unit_price ?? 0),
+          itemId: x.itemId,
+          itemName: x.itemName ?? "",
+          orderedQty: Number(x.orderedQty ?? 0),
+          shipQty: Number(x.shipQty ?? 0),
+          unitPrice: Number(x.unitPrice ?? 0),
           amount: Number(x.amount ?? 0),
-          unit: x.unit ?? '',
-          spec: x.spec ?? '',
-          tempZone: x.temp_zone ?? undefined,
-          lotNo: x.lot_no ?? '',
-          note: x.note ?? '',
-        }))
-      );
+          unit: x.unit ?? "",
+          spec: x.spec ?? "",
+          tempZone: (x.tempZone ?? undefined),
+          lotNo: x.lotNo ?? "",
+          note: x.note ?? "",
+        })
+      )
+    );
   }
-  // 旧：headers.map(h => ({ ... ?? h.deliveryDate ... }))
-// ↓ 新：ApiShipmentHeader(snake_case) → VendorOrderHeader(camelCase) に正規化
-return {
-  headers: headers.map((h): VendorOrderHeader => ({
-    id: String(h.id),
-    orderDate: h.order_date,
-    deliveryDate: h.delivery_date,
-    status: h.status,
-    vendorId: h.vendor_id,
-    vendorName: h.vendor_name ?? undefined,
-    destinationId: h.destination_id,
-    destinationName: h.destination_name ?? undefined,
-  })),
-  lines,
-};
+
+  return {
+    headers: headers.map(
+      (h): VendorOrderHeader => ({
+        id: String(h.id),
+        orderDate: h.orderDate,
+        deliveryDate: h.deliveryDate,
+        status: h.status, // すでに union 型なのでそのままOK
+        vendorId: h.vendorId,
+        vendorName: h.vendorName ?? undefined,
+        destinationId: h.destinationId,
+        destinationName: h.destinationName ?? undefined,
+      })
+    ),
+    lines,
+  };
 }
 
 export async function getShipment(id: string) {
-  const raw = await getJson<GetShipmentResponse>(`/shipments/${id}`);
+  const raw = await getJson<unknown>(`/shipments/${id}`);
 
-  // header 変換（camel / snake 両対応）
-  const header: VendorOrderHeader | undefined = raw.header
-    ? {
-        id: String(raw.header.id),
-        orderDate: 'orderDate' in raw.header
-          ? raw.header.orderDate
-          : (raw.header as RawHeaderSnake).order_date,
-        deliveryDate: 'deliveryDate' in raw.header
-          ? raw.header.deliveryDate
-          : (raw.header as RawHeaderSnake).delivery_date,
-        status: raw.header.status,
-        vendorId: 'vendorId' in raw.header
-          ? raw.header.vendorId
-          : (raw.header as RawHeaderSnake).vendor_id,
-        vendorName: 'vendorName' in raw.header
-          ? (raw.header.vendorName ?? undefined)
-          : ((raw.header as RawHeaderSnake).vendor_name ?? undefined),
-        destinationId: 'destinationId' in raw.header
-          ? raw.header.destinationId
-          : (raw.header as RawHeaderSnake).destination_id,
-        destinationName: 'destinationName' in raw.header
-          ? (raw.header.destinationName ?? undefined)
-          : ((raw.header as RawHeaderSnake).destination_name ?? undefined),
-      }
-    : undefined;
+  if (typeof raw !== "object" || raw == null) {
+    throw new Error("invalid response: not an object");
+  }
+  const r = raw as Record<string, unknown>;
 
-  // line 変換（camel / snake 両対応）
-  const lines: VendorOrderLine[] = (raw.lines ?? []).map((x) => {
-    const itemId = 'itemId' in x ? x.itemId : (x as RawLineSnake).item_id;
-    const itemName = 'itemName' in x ? x.itemName : (x as RawLineSnake).item_name;
-    const orderedQty = 'orderedQty' in x ? x.orderedQty : (x as RawLineSnake).ordered_qty;
-    const shipQty = 'shipQty' in x ? x.shipQty : (x as RawLineSnake).ship_qty;
-    const unitPrice = 'unitPrice' in x ? x.unitPrice : (x as RawLineSnake).unit_price;
-    const tempZone = 'tempZone' in x ? x.tempZone : (x as RawLineSnake).temp_zone;
-    const lotNo = 'lotNo' in x ? x.lotNo : (x as RawLineSnake).lot_no;
-    const headerId = 'headerId' in x ? x.headerId : (x as RawLineSnake).shipment_id;
+  // header
+  const rawHeader = r["header"];
+  const header: VendorOrderHeader | undefined =
+    typeof rawHeader === "object" && rawHeader != null
+      ? (() => {
+          const h = rawHeader as Record<string, unknown>;
+          return {
+            id: String(h["id"]),
+            orderDate: String(h["orderDate"] ?? ""),
+            deliveryDate: String(h["deliveryDate"] ?? ""),
+            status: toShipmentStatus(h["status"]),
+            vendorId: String(h["vendorId"] ?? ""),
+            vendorName: (h["vendorName"] ?? undefined) as string | undefined,
+            destinationId: String(h["destinationId"] ?? ""),
+            destinationName: (h["destinationName"] ?? undefined) as string | undefined,
+          };
+        })()
+      : undefined;
+
+  // lines
+  const rawLines = r["lines"];
+  const arr: unknown[] = Array.isArray(rawLines) ? rawLines : [];
+
+  const lines: VendorOrderLine[] = arr.map((u) => {
+    const x =
+      typeof u === "object" && u != null ? (u as Record<string, unknown>) : ({} as Record<string, unknown>);
 
     return {
-      lineId: String(('lineId' in x && x.lineId != null ? x.lineId : x.id)),
-      headerId: String(headerId ?? id),
-      itemId,
-      itemName: itemName ?? '',
-      orderedQty: Number(orderedQty ?? 0),
-      shipQty: Number(shipQty ?? 0),
-      unitPrice: Number(unitPrice ?? 0),
-      amount: Number(('amount' in x ? x.amount : (x as RawLineSnake).amount) ?? 0),
-      unit: ('unit' in x ? x.unit : (x as RawLineSnake).unit) ?? '',
-      spec: ('spec' in x ? x.spec : (x as RawLineSnake).spec) ?? '',
-      tempZone: tempZone ?? undefined,
-      lotNo: lotNo ?? '',
-      note: ('note' in x ? x.note : (x as RawLineSnake).note) ?? '',
+      lineId: String((x["lineId"] ?? x["id"]) as unknown),
+      headerId: String((x["headerId"] ?? id) as unknown),
+      itemId: String(x["itemId"] ?? ""),
+      itemName: String(x["itemName"] ?? ""),
+      orderedQty: Number(x["orderedQty"] ?? 0),
+      shipQty: Number(x["shipQty"] ?? 0),
+      unitPrice: Number(x["unitPrice"] ?? 0),
+      amount: Number(x["amount"] ?? 0),
+      unit: String(x["unit"] ?? ""),
+      spec: String(x["spec"] ?? ""),
+      tempZone: toTempZoneOrUndef(x["tempZone"]),
+      lotNo: String(x["lotNo"] ?? ""),
+      note: String(x["note"] ?? ""),
     };
   });
 
@@ -379,47 +365,13 @@ export type MasterItem = {
 };
 
 type RawItem = {
-  id?: unknown; item_id?: unknown; code?: unknown;
-  name?: unknown; item_name?: unknown;
-  spec?: unknown; item_spec?: unknown;
+  id?: unknown;
+  code?: unknown;  // もし code を返す仕様が残るなら残す
+  name?: unknown;
+  spec?: unknown;
   unit?: unknown;
-  tempZone?: unknown; temp_zone?: unknown;
+  tempZone?: unknown;
 };
-
-// TempZone の実体に合わせて列挙（必要なら増やしてください）
-function isTempZone(v: unknown): v is TempZone {
-  return v === 'ambient' || v === 'chilled' || v === 'frozen';
-}
-
-// 置換：既存の listItems() 全体
-export async function listItems(): Promise<MasterItem[]> {
-  const rows = await getJson<unknown[]>('/master/items');
-  function isRecord(v: unknown): v is Record<string, unknown> {
-    return typeof v === "object" && v !== null;
-  }
-
-  const norm = (r: unknown): MasterItem | null => {
-    if (!isRecord(r)) return null;
-
-    const idRaw = r.id ?? r.item_id ?? r.code ?? null;
-    if (typeof idRaw !== 'string') return null;
-
-      const nameRaw = r.name ?? r.item_name ?? null;
-      const specRaw = r.spec ?? r.item_spec ?? null;
-      const unitRaw = r.unit ?? null;
-      const tzRaw   = r.tempZone ?? r.temp_zone ?? null;
-
-    return {
-      id: idRaw,
-      name: typeof nameRaw === 'string' ? nameRaw : null,
-      spec: typeof specRaw === 'string' ? specRaw : null,
-      unit: typeof unitRaw === 'string' ? unitRaw : null,
-      // ← ここがポイント：TempZoneにマッチした時だけ代入、違えば null
-      tempZone: isTempZone(tzRaw) ? tzRaw : null,
-    };
-  };
-  return (Array.isArray(rows) ? rows : []).map(norm).filter(Boolean) as MasterItem[];
-}
 
 
 export async function deleteLine(headerId: string, itemId: string): Promise<void> {
@@ -429,7 +381,6 @@ export async function deleteLine(headerId: string, itemId: string): Promise<void
 export async function replaceLines(headerId: string, rows: VendorOrderLine[]): Promise<void> {
   await postJson(`/shipments/${encodeURIComponent(headerId)}/lines/replace`, {
     lines: rows.map(l => ({
-      // itemId: ID.item(l.itemId),
       itemId: toItemId(l.itemId),
       orderedQty: Number(l.orderedQty ?? 0),
       shipQty: Number(l.shipQty ?? 0),
@@ -455,12 +406,12 @@ export async function listVendorItems(vendorId: string): Promise<MasterItem[]> {
 
   const out: MasterItem[] = [];
   for (const r of arr) {
-    const idRaw = r.id ?? r.item_id ?? r.code;
+    const idRaw = r.id ?? r.code;
     if (typeof idRaw !== 'string') continue;
-    const nameRaw = r.name ?? r.item_name ?? null;
-    const specRaw = r.spec ?? r.item_spec ?? null;
+    const nameRaw = r.name ?? null;
+    const specRaw = r.spec ?? null;
     const unitRaw = r.unit ?? null;
-    const tzRaw   = r.tempZone ?? r.temp_zone ?? null;
+    const tzRaw = r.tempZone ?? null;
     out.push({
       id: idRaw,
       name: (typeof nameRaw === 'string' ? nameRaw : null),
@@ -479,8 +430,8 @@ export async function listVendors(): Promise<MasterVendor[]> {
   if (isRecord(r1) && isArrayOfRecord(r1.vendors)) {
     const out: MasterVendor[] = [];
     for (const r of r1.vendors) {
-      const idRaw   = r.id ?? r.vendor_id ?? r.code;
-      const nameRaw = r.name ?? r.vendor_name ?? null;
+      const idRaw   = r.id ?? r.code;
+      const nameRaw = r.name ?? null;
       if (typeof idRaw !== "string") continue;
 
       // ★ 修正：name は必ず string にする
@@ -496,8 +447,8 @@ export async function listVendors(): Promise<MasterVendor[]> {
   const arr = isArrayOfRecord(r2) ? r2 : [];
   const out: MasterVendor[] = [];
   for (const r of arr) {
-    const idRaw   = r.id ?? r.vendor_id ?? r.code;
-    const nameRaw = r.name ?? r.vendor_name ?? null;
+    const idRaw   = r.id ?? r.code;
+    const nameRaw = r.name ?? null;
     if (typeof idRaw !== "string") continue;
 
     // ★ 修正：こちらも必ず string

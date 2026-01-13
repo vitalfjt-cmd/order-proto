@@ -1,5 +1,6 @@
 // frontend/src/store/StoreShipmentList.tsx
 import React, { useEffect, useState } from "react";
+import { ymd } from "../utils/date"
 import {
   searchStoreShipments,
   confirmStoreShipments,
@@ -28,8 +29,7 @@ const statusLabel: Record<StoreShipmentStatus, string> = {
 };
 
 export default function StoreShipmentList({ storeId, onChangeStoreId, onCreate, onEdit }: Props) {
-  const today = new Date().toISOString().slice(0, 10);
-
+  const today = ymd(new Date());
   const [dateFrom, setDateFrom] = useState(today);
   const [dateTo, setDateTo] = useState(today);
   const [movementType, setMovementType] =

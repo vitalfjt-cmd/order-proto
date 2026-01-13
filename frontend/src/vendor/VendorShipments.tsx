@@ -1,16 +1,17 @@
 import React, { useEffect, useMemo, useState } from "react";
 import type { VendorOrderHeader, VendorOrderLine } from "./apiVendor";
-import { buildPickingCsv } from "./pickingCsv";
 import { downloadCsv } from "../utils/csv";
 import { ensureFromShipments } from "../inspection/inspectionApi";
-import { openDeliveryNotePrint } from "./deliveryNote";
-import { openInvoicePrint } from "./invoicePrint";
-import { openPickingPrintWithStores } from "./pickingPrint";
 import { logEvent } from "../auditlog";
 import type { MasterVendor } from "./apiVendor";
 import { searchShipments, seedDemoIfEmpty, confirmShipments, unconfirmShipments, listVendors, generateShipments } from "./apiVendor";
-
-
+import { ymd, formatYMD } from "../utils/date"
+import {
+   buildPickingCsv,
+   openDeliveryNotePrint,
+   openInvoicePrint,
+   openPickingPrintWithStores,
+ } from "../reports";
 
 // ID 正規化（ゼロ埋め固定長）
 const ID = {
@@ -19,21 +20,6 @@ const ID = {
   store:  (s: string) => String(s ?? "").replace(/\D/g, "").padStart(4, "0"),
 };
 
-// type Props = {
-//   onEdit: (headerId: string) => void;
-// };
-// ==== 営業日ユーティリティ（簡易） ====
-// // 祝日は必要に応じて YYYY-MM-DD で追加してください
-// const HOLIDAYS = new Set<string>([
-//   // "2025-01-01", "2025-01-13", …  // 任意
-// ]);
-
-function formatYMD(d: Date): string {
-  const y = d.getFullYear();
-  const m = String(d.getMonth() + 1).padStart(2, "0");
-  const dd = String(d.getDate()).padStart(2, "0");
-  return `${y}-${m}-${dd}`;
-}
 
 function formatDateTimeLocal(d: Date): string {
   const y = d.getFullYear();
@@ -46,8 +32,8 @@ function formatDateTimeLocal(d: Date): string {
 }
 
 export function VendorShipments({ onEdit }: { onEdit?: (id: string, vendorId?: string) => void }) {
-  const [dateFrom, setDateFrom] = useState<string>(new Date().toISOString().slice(0,10));
-  const [dateTo, setDateTo] = useState<string>(new Date().toISOString().slice(0,10));
+  const [dateFrom, setDateFrom] = useState<string>(ymd(new Date()));
+  const [dateTo, setDateTo] = useState<string>(ymd(new Date()));
   const [searchHeaderId, setSearchHeaderId] = useState<string>("");
   const [vendorId, setVendorId] = useState<string>(() => sessionStorage.getItem("shipments.vendorId") || "");
   const [destinationId, setDestinationId] = useState<string>("");
@@ -237,7 +223,6 @@ async function doSearchWith(params: { dateFrom?: string; dateTo?: string; vendor
 
 
   async function handleUnconfirm(): Promise<void> {
-    // const ids = headers.filter(h => selected[h.id] && h.status === "confirmed").map(h => h.id);
     const targets = headers.filter(h => selected[h.id] && h.status === "confirmed");
     const ids = targets.map(h => h.id);
     if (ids.length === 0) { alert("取消対象（confirmed）が選択されていません。"); return; }

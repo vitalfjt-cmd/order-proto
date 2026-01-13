@@ -8,7 +8,9 @@ import { loadLatestDraftLike } from "./db";
 import { toCsvString, downloadCsv } from "./utils/csv";
 import { VendorInspectionList } from "./vendor/VendorInspectionList";
 import { StoreStockList } from "./store/StoreStockList";
-
+import { orderingApi } from "./ordering/orderingApi";
+import type { OrderingSubmitRequest } from "./ordering/types";
+import { getBusinessDate, getTodayBusinessYmd, getCutoffAt, isPastCutoff } from "./utils/date";
 
 // 遅延ロード（必要時のみ読み込み）
 const VendorShipments = React.lazy(() =>
@@ -50,12 +52,6 @@ const StoreMonthlySummary = React.lazy(() =>
 //  ※ もとの App.tsx のコンポーネントをそのまま内包
 // =========================
 
-// const api = new DefaultApi(new Configuration({ basePath: "" }));
-
-// 保存読み戻し時に lineId を付与する簡易ヘルパー
-// const genLineId = (itemId: string, i: number) =>
-//   `ln-${itemId}-${i}-${Date.now()}`;
-
 const IS_MANAGER = false; // true にすると起動時に自動呼出ししない
 
 // --- Types ---
@@ -65,59 +61,40 @@ type StoreLite = { id: string; name: string };
 type VendorLite = { id: string; name: string; cutoffHHmm?: string; leadTimeDays?: number };
 
 
-// サーバー側が返す行の型バリエーションを吸収するためのユニオン
-type RawLine =
-  | {
-      itemId: string;
-      qty?: number;
-      unitPrice?: number;
-      vendorId?: string;
-      expectedArrivalDate?: string | null;
-    }
-  | {
-      item_id: string;
-      qty?: number;
-      unit_price?: number;
-      vendor_id?: string;
-      expected_arrival_date?: string | null;
-    };
+// RawLine は「camelCase のみ」にする（snake_case は今後受けない）
+type RawLine = {
+  itemId?: string;
+  qty?: number;
+  unitPrice?: number | null;
+  vendorId?: string;
+  expectedArrivalDate?: string | null;
+};
 
-    type ApiItem = {
-      itemId: string;
-      name: string;
-      spec: string;
-      unit: string;
-      vendorId: string;
-      unitPrice: number;
-    };
-    
-    function normalizeRawLine(ln: RawLine): {
-      itemId: string;
-      qty: number;
-      unitPrice: number;
-      vendorId: string;
-      expectedArrivalDate: string | null;
-    } {
-      if ("itemId" in ln) {
-        // camelCase パターン
-        return {
-          itemId: ln.itemId ?? "",
-          qty: Number(ln.qty ?? 0),
-          unitPrice: Number(ln.unitPrice ?? 0),
-          vendorId: String(ln.vendorId ?? ""),
-          expectedArrivalDate: ln.expectedArrivalDate ?? null,
-        };
-      } else {
-        // snake_case パターン
-        return {
-          itemId: ln.item_id ?? "",
-          qty: Number(ln.qty ?? 0),
-          unitPrice: Number(ln.unit_price ?? 0),
-          vendorId: String(ln.vendor_id ?? ""),
-          expectedArrivalDate: ln.expected_arrival_date ?? null,
-        };
-      }
-    }
+type ApiItem = {
+  itemId: string;
+  name: string;
+  spec: string;
+  unit: string;
+  vendorId: string;
+  unitPrice: number;
+};
+
+function normalizeRawLine(ln: RawLine): {
+  itemId: string;
+  qty: number;
+  unitPrice: number;
+  vendorId: string;
+  expectedArrivalDate: string | null;
+} {
+  return {
+    itemId: ln.itemId ?? "",
+    qty: Number(ln.qty ?? 0),
+    unitPrice: Number(ln.unitPrice ?? 0),
+    vendorId: String(ln.vendorId ?? ""),
+    expectedArrivalDate: ln.expectedArrivalDate ?? null,
+  };
+}
+
 
 type OrderLine = {
   lineId: string;           // UI用ユニーク
@@ -143,30 +120,8 @@ type OrderDraft = {
 const formatDateLocal = (d: Date) =>
   `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
 
-function getBusinessDate(now = new Date()) {
-  const h = now.getHours(), m = now.getMinutes();
-  const isMaintenance = (h === 4) || (h === 5 && m === 0); // 04:00台をメンテ（厳密には04:00〜04:59想定）
-  // 04:00までは前日扱い（04:01から当日）
-  const ref = new Date(now);
-  if (h < 4 || (h === 4 && m === 0)) ref.setDate(ref.getDate() - 1);
-  return { businessDate: formatDateLocal(ref), isMaintenance };
-}
-
-// 営業日付の "今日" を常に取りたいとき用
-function getTodayBusinessYmd(): string {
-  return getBusinessDate().businessDate;
-}
-
 // --- pricing resolve (cache) ---
 
-
-function getCutoffAt(orderDate: string, hhmm: string): Date {
-  const [hh, mm] = hhmm.split(":").map(Number);
-  const d = new Date(orderDate + "T00:00:00"); // 営業日付の0時
-  d.setDate(d.getDate() + 1); // 翌日に進める
-  d.setHours(hh, mm, 0, 0); // 04:00 など
-  return d; // ローカルタイム（ブラウザ）
-}
 function isFutureBusinessDate(orderDate: string): boolean {
   const today = new Date();
   const yyyy = today.getFullYear();
@@ -174,21 +129,6 @@ function isFutureBusinessDate(orderDate: string): boolean {
   const dd = String(today.getDate()).padStart(2, "0");
   const todayStr = `${yyyy}-${mm}-${dd}`;
   return orderDate > todayStr; // 未来の営業日付なら true
-}
-
-const DEBUG_SAME_DAY_CUTOFF = false;
-
-function isPastCutoff(orderDate: string, hhmm: string) {
-  if (!orderDate) return false;
-  if (isFutureBusinessDate(orderDate)) return false; // 未来日は常に編集OK
-  if (DEBUG_SAME_DAY_CUTOFF) {
-    const [hh, mm] = hhmm.split(":").map(Number);
-    const t = new Date(orderDate + "T00:00:00");
-    t.setHours(hh, mm, 0, 0);
-    return Date.now() > t.getTime();
-  }
-  const cutoff = getCutoffAt(orderDate, hhmm);
-  return Date.now() > cutoff.getTime();
 }
 
 export type SubmitLine = {
@@ -280,9 +220,43 @@ function OrderEntryPrototype() {
     string,
     { name: string; spec: string; unit: string; vendorId: string; unitPrice: number }
   >>({});
-  // 画面で使う締め時刻（API優先 / なければ 04:00）
+
   const cutoffFromRule = orderRule?.cutoffHHmm ?? "04:00";
   const [isSearchLocked, setIsSearchLocked] = useState(false);
+  // 画面で使う締め時刻（API優先 / なければ 04:00）
+  // vendorMode=all のとき：明細に登場するベンダーの中で「最も早い締め」を採用する
+  const effectiveCutoffHHmm = useMemo(() => {
+    // フィルタ選択中（単一ベンダーに寄せて見ている）なら従来どおり
+    if (filterVendorId) return cutoffFromRule;
+
+    // 明細に含まれる vendorId の集合
+    const vendorIds = Array.from(
+      new Set(
+        (draft.lines || [])
+          .map((l) => String(l.vendorId || "").trim())
+          .filter((v) => v.length > 0)
+      )
+    );
+    if (vendorIds.length === 0) return cutoffFromRule;
+
+    // vendorRules から cutoff を集める（無ければ除外）
+    const normalize = (v: string) => (/^\d{1,2}:\d{2}$/.test(v) ? v : "04:00");
+    const cutoffs = vendorIds
+      .map((vid) => vendorRules[vid]?.cutoffHHmm)
+      .filter((x): x is string => typeof x === "string" && x.length > 0)
+      .map(normalize);
+
+    if (cutoffs.length === 0) return cutoffFromRule;
+
+    // cutoffAt が最も早いもの（=最も厳しい締め）を選ぶ
+    const orderDate = draft.requestDate;
+    const sorted = [...cutoffs].sort((a, b) => {
+      const ta = getCutoffAt(orderDate, a).getTime();
+      const tb = getCutoffAt(orderDate, b).getTime();
+      return ta - tb;
+    });
+    return sorted[0];
+  }, [draft.lines, draft.requestDate, filterVendorId, cutoffFromRule, vendorRules]);
 
   const isLinesLocked = (() => {
     if (isFutureBusinessDate(draft.requestDate)) return false;
@@ -290,7 +264,8 @@ function OrderEntryPrototype() {
     if (orderRule && !orderRule.orderable) return true;
      // サーバー側でもう confirmed 扱いならロック
     if (draft.status === "confirmed") return true;
-    return isPastCutoff(draft.requestDate, cutoffFromRule);
+    // return isPastCutoff(draft.requestDate, cutoffFromRule);
+    return isPastCutoff(draft.requestDate, effectiveCutoffHHmm);
   })();
 
   // 送信可否
@@ -347,7 +322,8 @@ function OrderEntryPrototype() {
   const isLocked =
     draft.status === "confirmed" ||
     (orderRule && !orderRule.orderable) ||
-    isPastCutoff(draft.requestDate, cutoffFromRule);
+    // isPastCutoff(draft.requestDate, cutoffFromRule);
+    isPastCutoff(draft.requestDate, effectiveCutoffHHmm)
 
   useEffect(() => {
     if (cutoffMode === "fixed" && !fixedCutoff && availableCutoffs.length > 0) {
@@ -372,18 +348,7 @@ function OrderEntryPrototype() {
     try {
       const storeId = draft.storeId;
       const orderDate = draft.requestDate;
-
-      const resp = await fetch(
-        `/ordering/entry?storeId=${encodeURIComponent(storeId)}&orderDate=${encodeURIComponent(orderDate)}`
-      );
-
-      if (!resp.ok) {
-        console.error("entry fetch failed", await resp.text());
-        alert("検索に失敗しました");
-        return;
-      }
-
-      const data = await resp.json();
+      const data = await orderingApi.entry(storeId, orderDate);
 
       // 名称マップ（サーバがあれば優先）
       setServerStoreName(String(data.storeName ?? getStoreNameById(draft.storeId)));
@@ -1171,27 +1136,64 @@ function OrderEntryPrototype() {
     };
     
     try {
-      const resp = await fetch("/ordering/submit", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(dto),
-      });
-
-      if (!resp.ok) {
-        const msg = await resp.text();
-        alert("送信エラー: " + msg);
-        return;
-      }
-
-      const result = await resp.json();
+      const result = await orderingApi.submit(dto as OrderingSubmitRequest);
       alert(`送信完了: 注文番号 ${result.orderId}\n合計金額: ¥${result.totals.total.toLocaleString()}`);
 
       // 送信後の初期化
       setIsSearchLocked(false);
       // setOrderRule(null);
       setDraft(prev => ({ ...prev, lines: [], status: "draft" }));
-    } catch (e) {
+    } catch (e: unknown) {
       console.error(e);
+
+      type ApiErr = {
+        status?: number;
+        statusText?: string;
+        body?: unknown;
+      };
+
+      const isApiErr = (v: unknown): v is ApiErr =>
+        typeof v === "object" && v !== null;
+
+      const isRecord = (v: unknown): v is Record<string, unknown> =>
+        typeof v === "object" && v !== null;
+
+      const err: ApiErr = isApiErr(e) ? e : {};
+      const status = err.status;
+      const bodyRec = isRecord(err.body) ? err.body : null;
+
+      if (status === 409 && bodyRec?.error === "cutoff_passed") {
+        const blockedRaw = bodyRec?.blocked;
+        const blocked = Array.isArray(blockedRaw) ? blockedRaw : [];
+
+        const detail =
+          blocked.length > 0
+            ? "\n" +
+              blocked
+                .map((b) => {
+                  const br = isRecord(b) ? b : null;
+                  const vid = typeof br?.vendorId === "string" ? br.vendorId : "";
+                  const hhmm = typeof br?.cutoffHHmm === "string" ? br.cutoffHHmm : "";
+                  return `- vendor ${vid}: cutoff ${hhmm}`;
+                })
+                .join("\n")
+            : "";
+
+        const msg =
+          typeof bodyRec?.message === "string"
+            ? bodyRec.message
+            : "締め時間を過ぎているため、送信できません。";
+
+        alert(msg + detail);
+        return;
+      }
+
+      if (typeof bodyRec?.message === "string") {
+        alert(bodyRec.message);
+        return;
+      }
+
+      // それ以外
       alert("ネットワークエラーが発生しました。");
     }
   }

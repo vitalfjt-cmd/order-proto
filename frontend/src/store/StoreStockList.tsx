@@ -1,6 +1,7 @@
 // frontend/src/store/StoreStockList.tsx
 import React, { useEffect, useState } from "react";
 import { toCsvString, downloadCsv } from "../utils/csv";
+import { todayYmd } from "../utils/date"
 
 type StoreStockRow = {
   storeId: string;
@@ -10,10 +11,6 @@ type StoreStockRow = {
   unit: string | null;
   qty: number;
 };
-
-function todayYmd() {
-  return new Date().toISOString().slice(0, 10);
-}
 
 export function StoreStockList() {
   const [storeIdInput, setStoreIdInput] = useState("0002");

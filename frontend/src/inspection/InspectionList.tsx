@@ -4,14 +4,10 @@ import { searchInspections, confirmInspections, auditInspections  } from "./insp
 import type { OwnerType, InspectionHeader, InspectionLine } from "./inspectionApi";
 import { buildDiscrepancyCsv } from "./discrepancyCsv";
 import { downloadCsv } from "../utils/csv";
-// import { buildSlipsFromInspections } from "../slips/slipsApi";
-// import { buildSlipsCsv, openSlipsPrint } from "../slips/slipsCsvPdf";
 import { logEvent } from "../auditlog";
 import { VendorModal } from "../components/VendorModal";
+import { ymd } from "../utils/date";
 
-function ymd(date: Date): string {
-  return date.toISOString().slice(0, 10);
-}
 type Props = {
   ownerType: OwnerType;   // "STORE" | "DC"
   ownerId: string;        // 例: "0001" / "DC01"

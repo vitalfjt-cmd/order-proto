@@ -6,6 +6,16 @@ import { ID } from '../lib/id';
 
 export const inspections = Router();
 
+class ApiError extends Error {
+  status: number;
+  body: any;
+  constructor(status: number, body: any) {
+    super(body?.message ?? body?.error ?? "ApiError");
+    this.status = status;
+    this.body = body;
+  }
+}
+
 // ===== 型定義 =====
 
 type OwnerType = 'STORE' | 'DC';
@@ -22,6 +32,7 @@ type GenerateFromShipmentsResult = {
   createdLines: number;         // 追加/更新された inspection_lines 行数
   processedShipments: number;   // 処理対象となった出荷ヘッダ数（= confirmed）
   skippedShipments: number;     // 指定されたがスキップされた出荷ヘッダ数
+  skippedNoLines?: number;
 };
 
 // 検品ステータス
@@ -256,12 +267,11 @@ inspections.post('/inspections/generate-from-shipments', (req, res) => {
   );
 
   if (shipmentIds.length === 0) {
-    return res
-      .status(400)
-      .json({ ok: false, error: 'shipmentHeaderIds が不正です' });
+    return res.status(400).json({ ok: false, error: 'shipmentHeaderIds が不正です' });
   }
 
   try {
+    // ★ ownerId（店舗）に紐づく shipment のみに絞る（安全策）
     const placeholders = shipmentIds.map(() => '?').join(',');
     const shipments = db
       .prepare(
@@ -274,15 +284,16 @@ inspections.post('/inspections/generate-from-shipments', (req, res) => {
           status
         FROM shipments
         WHERE id IN (${placeholders})
+          AND destination_id = ?
         `
       )
-      .all(...shipmentIds) as {
-      id: number;
-      vendorId: string;
-      destinationId: string;
-      deliveryDate: string;
-      status: string;
-    }[];
+      .all(...shipmentIds, ownerId) as {
+        id: number;
+        vendorId: string;
+        destinationId: string;
+        deliveryDate: string;
+        status: string;
+      }[];
 
     if (shipments.length === 0) {
       const result: GenerateFromShipmentsResult = {
@@ -291,13 +302,12 @@ inspections.post('/inspections/generate-from-shipments', (req, res) => {
         createdLines: 0,
         processedShipments: 0,
         skippedShipments: shipmentIds.length,
+        skippedNoLines: 0,
       };
       return res.json(result);
     }
 
-    const confirmedShipments = shipments.filter(
-      (s) => s.status === 'confirmed'
-    );
+    const confirmedShipments = shipments.filter((s) => s.status === 'confirmed');
     if (confirmedShipments.length === 0) {
       const result: GenerateFromShipmentsResult = {
         ok: true,
@@ -305,26 +315,33 @@ inspections.post('/inspections/generate-from-shipments', (req, res) => {
         createdLines: 0,
         processedShipments: 0,
         skippedShipments: shipmentIds.length,
+        skippedNoLines: 0,
       };
       return res.json(result);
     }
 
+    // ---- tx は1個だけ ----
+    const confirmedIds = confirmedShipments.map((s) => s.id);
+    const inPlaceholders = confirmedIds.map(() => '?').join(',');
+
     const tx = db.transaction(() => {
       let createdHeaders = 0;
       let affectedLines = 0;
+      let processedShipments = 0;
+      let skippedNoLines = 0;
 
-      const confirmedIds = confirmedShipments.map((s) => s.id);
-      const inPlaceholders = confirmedIds.map(() => '?').join(',');
-
+      // 既存 inspections を拾う（shipment_id -> inspection_id）
+      // （owner_id でも絞る：保険）
       const existing = db
         .prepare(
           `
           SELECT id, shipment_id AS shipmentId
           FROM inspections
           WHERE shipment_id IN (${inPlaceholders})
+            AND owner_id = ?
           `
         )
-        .all(...confirmedIds) as { id: number; shipmentId: number }[];
+        .all(...confirmedIds, ownerId) as { id: number; shipmentId: number }[];
 
       const shipmentIdToInspectionId = new Map<number, number>();
       for (const row of existing) {
@@ -348,16 +365,19 @@ inspections.post('/inspections/generate-from-shipments', (req, res) => {
         `
       );
 
+      // ★ COUNT(*) をやめて、SELECTして0件判定する
+      // ★ amount も持ってくる（「コピー」を明示）
       const selectShipmentLines = db.prepare(
         `
         SELECT
-          item_id   AS itemId,
-          ship_qty  AS shipQty,
+          item_id    AS itemId,
+          ship_qty   AS shipQty,
           unit_price AS unitPrice,
+          amount     AS amount,
           unit,
           spec,
-          temp_zone AS tempZone,
-          lot_no    AS lotNo,
+          temp_zone  AS tempZone,
+          lot_no     AS lotNo,
           note
         FROM shipment_lines
         WHERE shipment_id = ?
@@ -377,7 +397,7 @@ inspections.post('/inspections/generate-from-shipments', (req, res) => {
           temp_zone,
           lot_no,
           note,
-          unit_price,
+          unit_price AS unitPrice,
           amount
         )
         VALUES (
@@ -408,39 +428,13 @@ inspections.post('/inspections/generate-from-shipments', (req, res) => {
         `
       );
 
+      const touchInspection = db.prepare(`
+        UPDATE inspections
+           SET updated_at = datetime('now','localtime')
+         WHERE id = ?
+      `);
+
       for (const s of confirmedShipments) {
-        let inspectionId = shipmentIdToInspectionId.get(s.id);
-
-          if (!inspectionId) {
-            const r = insertInspection.run({
-              shipmentId: s.id,
-              ownerId,
-              deliveryDate: s.deliveryDate, // ← ここを追加
-          });
-
-          if (r.changes && r.changes > 0) {
-            createdHeaders += 1;
-          }
-
-          const row = db
-            .prepare(
-              `
-            SELECT id
-            FROM inspections
-            WHERE shipment_id = ?
-            `
-            )
-            .get(s.id) as { id: number } | undefined;
-
-          if (!row) {
-            throw new Error(
-              `failed to fetch inspection header for shipment ${s.id}`
-            );
-          }
-          inspectionId = row.id;
-          shipmentIdToInspectionId.set(s.id, inspectionId);
-        }
-
         const lines = selectShipmentLines.all(s.id) as {
           itemId: string;
           shipQty: number;
@@ -449,57 +443,93 @@ inspections.post('/inspections/generate-from-shipments', (req, res) => {
           tempZone: string | null;
           lotNo: string | null;
           note: string | null;
-          // 追加 ここから
           unitPrice: number;
-          // 追加 ここまで
+          amount: number;
         }[];
- 
+
+        // --- shipment_lines が 0 件なら検品生成しない ---
+        if (!lines || lines.length === 0) {
+          skippedNoLines += 1;
+          continue;
+        }
+
+        processedShipments += 1;
+
+        let inspectionId = shipmentIdToInspectionId.get(s.id);
+
+        if (!inspectionId) {
+          const r = insertInspection.run({
+            shipmentId: s.id,
+            ownerId,
+            deliveryDate: s.deliveryDate,
+          });
+
+          if (r.changes && r.changes > 0) createdHeaders += 1;
+
+          // lastInsertRowid を優先
+          const newId = Number((r as any).lastInsertRowid);
+          if (Number.isFinite(newId) && newId > 0) {
+            inspectionId = newId;
+          } else {
+            // 念のため SELECT で拾う
+            const row = db
+              .prepare(`SELECT id FROM inspections WHERE shipment_id = ? AND owner_id = ?`)
+              .get(s.id, ownerId) as { id: number } | undefined;
+            if (!row)
+              throw new Error(`failed to fetch inspection header for shipment ${s.id}`);
+            inspectionId = row.id;
+          }
+
+          shipmentIdToInspectionId.set(s.id, inspectionId);
+        }
+
         for (const ln of lines) {
           const shipQty = Number(ln.shipQty ?? 0);
-          // const inspectedQty = shipQty;
-          // const diffQty = 0;
-          // 追加 ここから
           const unitPrice = Number(ln.unitPrice ?? 0);
-          const inspectedQty = Number(ln.shipQty ?? 0); // 生成時は出荷数を初期値にする想定
-          const amount = inspectedQty * unitPrice;
-          // 追加 ここまで
+
+          // qty>0 なのに単価が 0/不正なら止める（事故防止）
+          if (shipQty > 0 && (!Number.isFinite(unitPrice) || unitPrice <= 0)) {
+            throw new ApiError(409, {
+              ok: false,
+              error: 'unit_price_missing_on_shipment_line',
+              message: `出荷明細の単価が未設定/不正です（shipment_id=${s.id}, item_id=${ln.itemId}）`,
+              shipmentId: s.id,
+              itemId: ln.itemId,
+              unitPrice: ln.unitPrice,
+            });
+          }
+
+          const inspectedQty = shipQty; // 初期値は出荷数
+          // ★ amount は shipment_lines の値をコピー（無ければ計算）
+          const amount = Number.isFinite(Number(ln.amount))
+            ? Number(ln.amount)
+            : inspectedQty * unitPrice;
+
           const r2 = upsertInspectionLine.run({
             inspectionId,
             itemId: ln.itemId,
-            shipQty: ln.shipQty,
+            shipQty,
             inspectedQty,
-            // diffQty: inspectedQty - Number(ln.shipQty ?? 0), // 生成時は 0 のはず
             diffQty: 0,
             unit: ln.unit ?? null,
             spec: ln.spec ?? null,
             tempZone: ln.tempZone ?? null,
             lotNo: ln.lotNo ?? null,
             note: ln.note ?? null,
-            // 単価、金額を追加
-            unitPrice,  
-            amount,         
+            unitPrice,
+            amount,
           });
 
-          if (r2.changes && r2.changes > 0) {
-            affectedLines += r2.changes;
-          }
+          if (r2.changes && r2.changes > 0) affectedLines += r2.changes;
         }
 
-        db.prepare(
-          `
-          UPDATE inspections
-             SET updated_at = datetime('now','localtime')
-           WHERE id = ?
-          `
-        ).run(inspectionId);
+        touchInspection.run(inspectionId);
       }
 
-      return { createdHeaders, affectedLines };
+      return { createdHeaders, affectedLines, processedShipments, skippedNoLines };
     });
 
-    const { createdHeaders, affectedLines } = tx();
-
-    const processedShipments = confirmedShipments.length;
+    const { createdHeaders, affectedLines, processedShipments, skippedNoLines } = tx();
     const skippedShipments = shipmentIds.length - processedShipments;
 
     const result: GenerateFromShipmentsResult = {
@@ -508,14 +538,18 @@ inspections.post('/inspections/generate-from-shipments', (req, res) => {
       createdLines: affectedLines,
       processedShipments,
       skippedShipments,
+      skippedNoLines,
     };
 
     return res.json(result);
   } catch (e: any) {
     console.error('[/inspections/generate-from-shipments] error:', e);
-    return res
-      .status(500)
-      .json({ ok: false, error: String(e?.message ?? e) });
+
+    if (e && typeof e === 'object' && 'status' in e && 'body' in e) {
+      return res.status((e as any).status).json((e as any).body);
+    }
+
+    return res.status(500).json({ ok: false, error: String(e?.message ?? e) });
   }
 });
 
@@ -832,8 +866,6 @@ inspections.post('/inspections/confirm', (req, res) => {
       .json({ ok: false, error: String(e?.message ?? e) });
   }
 });
-
-
 
 // ===== 検品 監査（audited へ遷移） =====
 // body: { ids: number[] }
