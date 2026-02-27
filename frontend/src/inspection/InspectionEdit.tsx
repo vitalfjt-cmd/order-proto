@@ -1,12 +1,12 @@
 // src/inspection/InspectionEdit.tsx
 
-import React, { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { getInspection, saveInspectionLines } from "./inspectionApi";
 import type { InspectionHeader, InspectionLine } from "./inspectionApi";
 import { logEvent } from "../auditlog";
 
 type Props = {
-  headerId: string;
+  inspectionId: string;
   onBack: () => void;
   ownerId?: string; // 店舗ID（任意：ログ用）
 };
@@ -15,7 +15,7 @@ type LineView = InspectionLine & {
   itemName?: string;
 };
 
-export function InspectionEdit({ headerId, onBack, ownerId }: Props) {
+export function InspectionEdit({ inspectionId, onBack, ownerId }: Props) {
   const [header, setHeader] = useState<InspectionHeader | null>(null);
   const [lines, setLines] = useState<LineView[]>([]);
   const [loading, setLoading] = useState<boolean>(false);
@@ -27,7 +27,7 @@ export function InspectionEdit({ headerId, onBack, ownerId }: Props) {
     (async () => {
       setLoading(true);
       try {
-        const res = await getInspection(headerId);
+        const res = await getInspection(inspectionId);
         if (cancelled) return;
         setHeader(res.header);
         setLines(res.lines);
@@ -41,7 +41,7 @@ export function InspectionEdit({ headerId, onBack, ownerId }: Props) {
     return () => {
       cancelled = true;
     };
-  }, [headerId]);
+  }, [inspectionId]);
 
   const isLocked = header ? header.status !== "open" : false;
 
@@ -84,7 +84,7 @@ export function InspectionEdit({ headerId, onBack, ownerId }: Props) {
       // ログ
       logEvent({
         type: "inspection.save",
-        headerId: String(header.id),
+        inspectionId: String(header.id),
         ownerId: ownerIdResolved,
         vendorId: header.vendorId,
         destinationId: header.destinationId,

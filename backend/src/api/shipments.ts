@@ -60,6 +60,21 @@ type ResolvedRow = {
   unitPriceInconsistent?: number | null;
 };
 
+// ================================
+// REPLACE shipment lines (core + routes)
+// ================================
+type ReplaceLineIn = {
+  itemId?: string;
+  item_id?: string;
+  shipQty?: number;
+  ship_qty?: number;
+  unitPrice?: number;
+  unit_price?: number;
+  amount?: number;
+  lotNo?: string;
+  lot_no?: string;
+  note?: string;
+};
 
 // ===== 共通ヘルパ =====
 function ymd(date: Date): string {
@@ -80,9 +95,9 @@ class ApiError extends Error {
   }
 }
 
-function hasOwn(obj: any, key: string): boolean {
-  return Object.prototype.hasOwnProperty.call(obj, key);
-}
+// function hasOwn(obj: any, key: string): boolean {
+//   return Object.prototype.hasOwnProperty.call(obj, key);
+// }
 
 // vendor + item + 日付時点の単価（valid_from/to 対応）
 const findUnitPriceAt = db.prepare(`
@@ -116,7 +131,7 @@ function resolveUnitPriceOrThrow(args: {
         throw new ApiError(409, {
           ok: false,
           error: "unit_price_invalid",
-          message: `単価が不正です（itemId=${line.itemId ?? line.item_id}）`,
+          message: `単価が不正です（itemId=${line.itemId}）`,
           shipmentId,
           vendorId,
           deliveryDate,
@@ -127,7 +142,10 @@ function resolveUnitPriceOrThrow(args: {
   }
 
   // ② 明示が無い（or 空）ならマスタから引く
-  const itemId = String(line.itemId ?? line.item_id ?? "");
+  const itemId = String(line.itemId ?? "");
+  if (!itemId) {
+    throw new ApiError(400, { ok:false, error:"itemId_missing", message:"itemId is required" });
+  }
   const row = findUnitPriceAt.get(vendorId, itemId, deliveryDate, deliveryDate) as any;
   const p = row?.unitPrice;
   if (p == null) {
@@ -144,7 +162,26 @@ function resolveUnitPriceOrThrow(args: {
   }
   return Number(p);
 }
-// 追加　ここまで
+
+// ================================
+// shared helpers (camel/snake migration support)
+// ================================
+function toInt(v: unknown) {
+  const n = Number(v);
+  return Number.isFinite(n) ? n : NaN;
+}
+
+function pick(req: any, keys: string[]) {
+  for (const k of keys) {
+    const v = req.params?.[k] ?? req.query?.[k] ?? req.body?.[k];
+    if (v !== undefined && v !== null && String(v) !== "") return v;
+  }
+  return undefined;
+}
+
+function pickBody(req: any) {
+  return (req.body ?? {}) as any;
+}
 
 // ===== 一覧取得 (/shipments) =====
 // VendorShipments の検索で利用（snake_case で返す）
@@ -155,39 +192,23 @@ shipments.get('/shipments', (req, res) => {
   const vendorId = req.query.vendorId ? ID.vendor(String(req.query.vendorId)) : '';
   const destinationId = req.query.destinationId ? ID.store(String(req.query.destinationId)) : '';
 
-  const headerIdRaw = String(req.query.headerId || '').trim();
-  let headerId: number | null = null;
-  if (headerIdRaw) {
-    const digits = headerIdRaw.replace(/\D/g, '');
-    if (digits) {
-      const n = Number(digits);
-      if (Number.isFinite(n)) headerId = n;
-    }
-  }
-
   const where: string[] = [];
-  const params: Record<string, any> = {};
+  const params: any = {};
 
-  if (df) {
-    where.push('s.delivery_date >= @df');
-    params.df = df;
+  const shipmentIdRaw = String(req.query.shipmentId || "").trim();
+  let shipmentId: number | null = null;
+
+  if (shipmentIdRaw) {
+    const digits = shipmentIdRaw.replace(/\D/g, "");
+    const n = Number(digits);
+    if (Number.isFinite(n)) shipmentId = n;
   }
-  if (dt) {
-    where.push('s.delivery_date <= @dt');
-    params.dt = dt;
+
+  if (shipmentId != null) {
+    where.push("s.id = @shipmentId");
+    params.shipmentId = shipmentId;
   }
-  if (vendorId) {
-    where.push('s.vendor_id = @vendorId');
-    params.vendorId = vendorId;
-  }
-  if (destinationId) {
-    where.push('s.destination_id = @destinationId');
-    params.destinationId = destinationId;
-  }
-  if (headerId != null) {
-    where.push('s.id = @headerId');
-    params.headerId = headerId;
-  }
+
 
   const whereSql = where.length ? `WHERE ${where.join(' AND ')}` : '';
 
@@ -259,7 +280,7 @@ shipments.get('/shipments/:id', (req, res) => {
     `
     SELECT
       l.id            AS id,
-      l.shipment_id   AS headerId,
+      l.shipment_id   AS shipmentId,
       l.item_id       AS itemId,
       it.name         AS itemName,
       l.ordered_qty   AS orderedQty,
@@ -290,7 +311,7 @@ shipments.get('/shipments/:id/lines', (req, res) => {
     `
       SELECT
         l.id            AS id,
-        l.shipment_id   AS headerId,
+        l.shipment_id   AS shipmentId,
         l.item_id       AS itemId,
         it.name         AS itemName,
         l.ordered_qty   AS orderedQty,
@@ -309,7 +330,7 @@ shipments.get('/shipments/:id/lines', (req, res) => {
     `
   ).all(id) as {
     id: number;
-    headerId: number;
+    shipmentId: number;
     itemId: string;
     itemName: string | null;
     orderedQty: number | null;
@@ -429,100 +450,75 @@ shipments.post('/shipments/create', (req, res) => {
   const headerRow = db.prepare(
     `
     SELECT
-      s.id,
-      s.vendor_id,
-      v.name AS vendor_name,
-      s.destination_id,
-      s.destination_name,
-      s.delivery_date,
-      s.status,
-      s.created_at,
-      s.updated_at
+      s.id               AS id,
+      s.vendor_id        AS vendorId,
+      v.name             AS vendorName,
+      s.destination_id   AS destinationId,
+      s.destination_name AS destinationName,
+      s.delivery_date    AS deliveryDate,
+      s.status           AS status,
+      s.created_at       AS createdAt,
+      s.updated_at       AS updatedAt
     FROM shipments s
     LEFT JOIN vendors v ON v.id = s.vendor_id
     WHERE s.id = ?
     `
-  ).get(newId) as (ShipmentHeaderRow & { vendor_name?: string | null });
+  ).get(newId) as any;
 
   const header = {
     id: String(headerRow.id),
-    deliveryDate: headerRow.delivery_date,
+    deliveryDate: headerRow.deliveryDate,
     status: headerRow.status,
-    vendorId: headerRow.vendor_id,
-    vendorName: headerRow.vendor_name ?? undefined,
-    destinationId: headerRow.destination_id,
-    destinationName: headerRow.destination_name ?? undefined,
+    vendorId: headerRow.vendorId,
+    vendorName: headerRow.vendorName ?? undefined,
+    destinationId: headerRow.destinationId,
+    destinationName: headerRow.destinationName ?? undefined,
   };
 
   return res.status(201).json({ ok: true, header });
 });
 
+// ================================
+// UPDATE shipment header (core + routes)
+// ================================
+function updateShipmentHeaderCore(db: any, shipmentId: number, body: any) {
+  // camel/snake どちらも拾う
+  const status = body.status;
+  const orderDate = body.orderDate ?? body.order_date;
+  const deliveryDate = body.deliveryDate ?? body.delivery_date;
+  const vendorId = body.vendorId ?? body.vendor_id;
+  const destinationId = body.destinationId ?? body.destination_id;
+  const destinationName = body.destinationName ?? body.destination_name;
 
-// ===== ヘッダ更新 (/shipments/:id PATCH) =====
-shipments.patch('/shipments/:id', (req, res) => {
-  const id = Number(req.params.id);
-  if (!Number.isFinite(id)) return res.status(400).json({ error: 'invalid id' });
+  // 既存の制約に合わせて「渡されたものだけ更新」
+  const sets: string[] = [];
+  const params: any = { id: shipmentId };
 
-  const body = req.body || {};
+  if (status !== undefined) { sets.push(`status = @status`); params.status = String(status); }
+  if (orderDate !== undefined) { sets.push(`order_date = @orderDate`); params.orderDate = String(orderDate); }
+  if (deliveryDate !== undefined) { sets.push(`delivery_date = @deliveryDate`); params.deliveryDate = String(deliveryDate); }
+  if (vendorId !== undefined) { sets.push(`vendor_id = @vendorId`); params.vendorId = ID.vendor(String(vendorId)); }
+  if (destinationId !== undefined) { sets.push(`destination_id = @destinationId`); params.destinationId = ID.store(String(destinationId)); }
+  if (destinationName !== undefined) { sets.push(`destination_name = @destinationName`); params.destinationName = destinationName == null ? null : String(destinationName); }
 
-  const existing = db.prepare(
-    `
-    SELECT
-      id, vendor_id, destination_id, destination_name, delivery_date, status
-    FROM shipments
-    WHERE id = ?
-    `
-  ).get(id) as {
-    id: number;
-    vendor_id: string;
-    destination_id: string;
-    destination_name: string | null;
-    delivery_date: string;
-    status: string;
-  } | undefined;
+  if (sets.length === 0) return; // 何も更新しない
 
-  if (!existing) return res.status(404).json({ error: 'not found' });
-
-  const deliveryDate =
-    body.deliveryDate != null ? String(body.deliveryDate).slice(0, 10) : existing.delivery_date;
-  const vendorId =
-    body.vendorId != null && body.vendorId !== ''
-      ? ID.vendor(String(body.vendorId))
-      : existing.vendor_id;
-  const destinationId =
-    body.destinationId != null && body.destinationId !== ''
-      ? ID.store(String(body.destinationId))
-      : existing.destination_id;
-  const destinationName =
-    body.destinationName !== undefined
-      ? (body.destinationName != null && body.destinationName !== ''
-          ? String(body.destinationName)
-          : null)
-      : existing.destination_name;
-  const status =
-    body.status != null ? String(body.status) : existing.status;
+  sets.push(`updated_at = datetime('now')`);
 
   db.prepare(
-    `
-    UPDATE shipments
-       SET delivery_date    = @deliveryDate,
-           vendor_id        = @vendorId,
-           destination_id   = @destinationId,
-           destination_name = @destinationName,
-           status           = @status,
-           updated_at       = datetime('now','localtime')
-     WHERE id = @id
-    `
-  ).run({
-    id,
-    deliveryDate,
-    vendorId,
-    destinationId,
-    destinationName,
-    status,
-  });
+    `UPDATE shipments SET ${sets.join(', ')} WHERE id = @id`
+  ).run(params);
+}
 
-  res.json({ ok: true });
+// 新：正ルート（推奨） + vendor 版
+shipments.patch(['/shipments/:id', '/vendor/shipments/:id'], (req, res) => {
+  const shipmentId = toInt(pick(req, ['id', 'shipmentId']));
+  if (!Number.isFinite(shipmentId)) {const shipmentId = toInt(pick(req, ['id', 'shipmentId']));
+    return res.status(400).json({ ok: false, error: 'invalid shipmentId' });
+  }
+
+  updateShipmentHeaderCore(db, shipmentId, pickBody(req));
+  return res.json({ ok: true });
 });
 
 function replaceLinesInternal(shipmentId: number, rows: any[]) {
@@ -581,12 +577,73 @@ function replaceLinesInternal(shipmentId: number, rows: any[]) {
         (@shipmentId, @itemId, @orderedQty, @shipQty, @unitPrice, @amount, @unit, @spec, @tempZone, @lotNo, @note)
     `);
 
-    for (const r of lines) {
-      const itemId = ID.item(String(r.itemId ?? r.item_id ?? ""));
-      if (!itemId) continue;
+    const hasOwn = (o: any, k: string) =>
+      Object.prototype.hasOwnProperty.call(o, k);
 
-      const shipQty = Number(r.shipQty ?? r.ship_qty ?? 0);
-      const orderedQty = Number(r.orderedQty ?? r.ordered_qty ?? shipQty);
+    for (const r of lines) {
+      // 0) snake を最優先で禁止（ここで止める）
+      const snakeKeys = ["item_id", "ship_qty", "unit_price", "lot_no", "temp_zone", "ordered_qty"];
+      const usedSnake = snakeKeys.filter((k) => k in (r ?? {}));
+      if (usedSnake.length) {
+        throw new ApiError(400, {
+          ok: false,
+          error: "snake_case_not_allowed",
+          message: `snake_case keys are not accepted: ${usedSnake.join(", ")}`,
+          shipmentId,
+        });
+      }
+
+      // 1) itemId 必須：空のまま ID.item に入れない（"000000" 化を防ぐ）
+      if (!hasOwn(r, "itemId")) {
+        throw new ApiError(400, { ok: false, error: "itemId_missing", message: "itemId is required", shipmentId });
+      }
+      const itemIdRaw = String(r.itemId ?? "").trim();
+      if (!itemIdRaw) {
+        throw new ApiError(400, { ok: false, error: "itemId_missing", message: "itemId is required", shipmentId });
+      }
+
+      const itemId = ID.item(itemIdRaw);
+      // ID.item が空を "000000" にする実装対策
+      if (!itemId || itemId === "000000") {
+        throw new ApiError(400, { ok: false, error: "itemId_invalid", message: `itemId is invalid (${itemIdRaw})`, shipmentId });
+      }
+
+      const shipQtyProvided = hasOwn(r, "shipQty");
+      const rawShipQty = r.shipQty;
+      const shipQty =
+        shipQtyProvided && rawShipQty !== "" && rawShipQty != null
+          ? Number(rawShipQty)
+          : NaN;
+
+      if (!Number.isFinite(shipQty) || shipQty < 0) {
+        throw new ApiError(400, {
+          ok: false,
+          error: "shipQty_invalid",
+          message: `shipQty is invalid (itemId=${itemId})`,
+          shipmentId,
+          itemId,
+          shipQty: rawShipQty,
+        });
+      }
+
+      // orderedQty（任意指定。未指定なら shipQty）
+      const orderedQtyProvided = hasOwn(r, "orderedQty");
+      const rawOrderedQty = r.orderedQty;
+      const orderedQty =
+        orderedQtyProvided && rawOrderedQty !== "" && rawOrderedQty != null
+          ? Number(rawOrderedQty)
+          : shipQty;
+
+      if (!Number.isFinite(orderedQty) || orderedQty < 0) {
+        throw new ApiError(400, {
+          ok: false,
+          error: "orderedQty_invalid",
+          message: `orderedQty is invalid (itemId=${itemId})`,
+          shipmentId,
+          itemId,
+          orderedQty: rawOrderedQty,
+        });
+      }
 
       // --- unitPrice 解決（NULLは禁止。解決できなければ 409） ---
       const unitPriceProvided = hasOwn(r, "unitPrice");
@@ -661,8 +718,8 @@ function replaceLinesInternal(shipmentId: number, rows: any[]) {
         amount,    // ★必ず number（NOT NULL）
         unit: r.unit ?? null,
         spec: r.spec ?? null,
-        tempZone: r.tempZone ?? r.temp_zone ?? null,
-        lotNo: r.lotNo ?? r.lot_no ?? null,
+        tempZone: r.tempZone ?? null,
+        lotNo: r.lotNo ?? null,
         note: r.note ?? null,
       });
     }
@@ -671,58 +728,171 @@ function replaceLinesInternal(shipmentId: number, rows: any[]) {
   tx(rows || []);
 }
 
-// 追加
-function handleReplaceLines(req: any, res: any, shipmentId: number, lines: any[]) {
+// shipments.ts（replaceLinesInternal の近くに追加）
+
+function replaceShipmentLinesCore(shipmentId: number, rawLines: any[]) {
+  // rawLines は camel/snake 混在OK（replaceLinesInternal 側で吸収している想定）
+  replaceLinesInternal(shipmentId, rawLines);
+}
+
+function handleReplaceLines(req: any, res: any) {
   try {
-    replaceLinesInternal(shipmentId, lines);
+    const shipmentId = Number(req.params?.shipmentId);
+    if (!Number.isFinite(shipmentId)) {
+      return res.status(400).json({ ok: false, error: "invalid shipmentId" });
+    }
+
+    const lines = pickLinesPayload(req);
+    if (!lines.length) {
+      return res.status(400).json({ ok: false, error: "lines is required" });
+    }
+
+    replaceShipmentLinesCore(shipmentId, lines);
     return res.json({ ok: true });
   } catch (e: any) {
-    if (e && typeof e === "object" && "status" in e && "body" in e) {
-      // ApiError 想定
-      return res.status((e as any).status).json((e as any).body);
+    // ★ここを追加：ApiError を status で返す
+    if (e && typeof e.status === "number" && e.body) {
+      return res.status(e.status).json(e.body);
     }
+
     console.error("[replaceLines] error:", e);
     return res.status(500).json({ ok: false, error: String(e?.message ?? e) });
   }
 }
-// 更新
-shipments.post('/shipments/:id/lines/replace', (req, res) => {
-  const id = Number(req.params.id);
-  if (!Number.isFinite(id)) return res.status(400).json({ ok:false, error: 'invalid id' });
 
-  const lines: any[] = Array.isArray(req.body?.lines) ? req.body.lines : [];
-  return handleReplaceLines(req, res, id, lines);
-});
+const hasOwn = (o: any, k: string) =>
+  Object.prototype.hasOwnProperty.call(o, k);
 
-// ===== 単行削除 (/shipments/:id/lines/:itemId) =====
-shipments.delete('/shipments/:id/lines/:itemId', (req, res) => {
-  const shipmentId = Number(req.params.id);
-  if (!Number.isFinite(shipmentId)) return res.status(400).json({ error: 'invalid id' });
+function normalizeReplaceLine(shipmentId: number, r: any): any {
+  // 1) snake を最優先で禁止（ここで止める）
+  const snakeKeys = ["item_id", "ship_qty", "unit_price", "lot_no", "temp_zone", "ordered_qty"];
+  const usedSnake = snakeKeys.filter((k) => k in (r ?? {})); // hasOwn でもOK。in が一番確実
+  if (usedSnake.length) {
+    throw new ApiError(400, {
+      ok: false,
+      error: "snake_case_not_allowed",
+      message: `snake_case keys are not accepted: ${usedSnake.join(", ")}`,
+      shipmentId,
+    });
+  }
 
-  const itemId = ID.item(String(req.params.itemId || ''));
-  if (!itemId) return res.status(400).json({ error: 'invalid itemId' });
+  // 2) itemId は「存在」＋「空じゃない」を保証してから ID.item へ
+  if (!hasOwn(r, "itemId")) {
+    throw new ApiError(400, {
+      ok: false,
+      error: "itemId_missing",
+      message: "itemId is required",
+      shipmentId,
+    });
+  }
+  const itemIdRaw = String(r.itemId ?? "").trim();
+  if (!itemIdRaw) {
+    throw new ApiError(400, {
+      ok: false,
+      error: "itemId_missing",
+      message: "itemId is required",
+      shipmentId,
+    });
+  }
+  const itemId = ID.item(itemIdRaw);
+  // 念のため（ID.item が空を 000000 にする実装対策）
+  if (!itemId || itemId === "000000") {
+    throw new ApiError(400, {
+      ok: false,
+      error: "itemId_invalid",
+      message: `itemId is invalid (${itemIdRaw})`,
+      shipmentId,
+    });
+  }
 
+  // 3) shipQty も必須（存在しないなら missing を返す）
+  if (!hasOwn(r, "shipQty")) {
+    throw new ApiError(400, {
+      ok: false,
+      error: "shipQty_missing",
+      message: `shipQty is required (itemId=${itemId})`,
+      shipmentId,
+      itemId,
+    });
+  }
+  const shipQtyRaw = r.shipQty;
+  const shipQty = Number(shipQtyRaw);
+  if (!Number.isFinite(shipQty) || shipQty < 0) {
+    throw new ApiError(400, {
+      ok: false,
+      error: "shipQty_invalid",
+      message: `shipQty is invalid (itemId=${itemId})`,
+      shipmentId,
+      itemId,
+      shipQty: shipQtyRaw,
+    });
+  }
+
+  // 4) unitPrice（camelのみ）
+  const unitPriceRaw = r.unitPrice;
+  const unitPrice =
+    unitPriceRaw == null || unitPriceRaw === "" ? null : Number(unitPriceRaw);
+
+  if (unitPrice != null && !Number.isFinite(unitPrice)) {
+    throw new ApiError(400, {
+      ok: false,
+      error: "unitPrice_invalid",
+      message: `unitPrice is invalid (itemId=${itemId})`,
+      shipmentId,
+      itemId,
+      unitPrice: unitPriceRaw,
+    });
+  }
+
+  const amount = r.amount == null ? null : Number(r.amount);
+  const lotNo = String(r.lotNo ?? "");
+  const note = r.note == null ? "" : String(r.note);
+
+  return { itemId, shipQty, unitPrice, amount, lotNo, note };
+}
+
+
+function pickLinesPayload(req: any): any[] {
+  const b = req.body ?? {};
+  if (Array.isArray(b.lines)) return b.lines;
+  return [];
+}
+
+// 正ルート（推奨）
+shipments.post(
+  [
+    "/shipments/:shipmentId/lines/replace",
+    "/shipments/:shipmentId/lines/bulk",
+    "/vendor/shipments/:shipmentId/lines/replace",
+    "/vendor/shipments/:shipmentId/lines/bulk",
+  ],
+  handleReplaceLines
+);
+
+// ================================
+// DELETE shipment line (core + routes)
+// ================================
+function deleteShipmentLineCore(db: any, shipmentId: number, itemId: string) {
   db.prepare(
     `DELETE FROM shipment_lines WHERE shipment_id = @shipmentId AND item_id = @itemId`
   ).run({ shipmentId, itemId });
+}
 
-  res.json({ ok: true });
-});
+// 新：正ルート（推奨） ※厳格化
+shipments.delete(
+  ['/shipments/:shipmentId/lines/:itemId', '/vendor/shipments/:shipmentId/lines/:itemId'],
+  (req, res) => {
+    const shipmentId = Number(req.params?.shipmentId);
+    const itemId = ID.item(String(req.params?.itemId ?? ''));
 
-// 旧 UI 互換: クエリ版
-shipments.delete(['/shipments/line', '/vendor/shipments/line'], (req, res) => {
-  const headerId = Number(req.query.headerId);
-  const itemId = ID.item(String(req.query.itemId || ''));
-  if (!Number.isFinite(headerId) || !itemId) {
-    return res.status(400).json({ error: 'invalid headerId or itemId' });
+    if (!Number.isFinite(shipmentId) || !itemId) {
+      return res.status(400).json({ ok: false, error: 'invalid shipmentId or itemId' });
+    }
+
+    deleteShipmentLineCore(db, shipmentId, itemId);
+    return res.json({ ok: true });
   }
-
-  db.prepare(
-    `DELETE FROM shipment_lines WHERE shipment_id = @shipmentId AND item_id = @itemId`
-  ).run({ shipmentId: headerId, itemId });
-
-  res.json({ ok: true });
-});
+);
 
 // ===== 確定/取消 =====
 shipments.post('/shipments/confirm', (req, res) => {
@@ -1015,30 +1185,6 @@ function generateShipmentsInternal(
     missingOrderable: Number(diag?.missingOrderable ?? 0),
   };
 
-    // ★ デバッグログ（締切判定の挙動チェック用）
-  console.log("[generateShipmentsInternal] params:", {
-    asOf,
-    df,
-    dt,
-    vendorId: vid,
-    destinationId: did,
-    totalRows: src.length,
-  });
-
-  console.log(
-    "[generateShipmentsInternal] sample rows:",
-    src.slice(0, 20).map((r) => ({
-      orderId: r.orderId,
-      storeId: r.storeId,
-      vendorId: r.vendorId,
-      orderDate: r.orderDate,
-      deliveryDate: r.deliveryDate,
-      cutoffHHmm: r.cutoffHHmm,
-      orderable: r.orderable,
-      qty: r.qty,
-    }))
-  );
-
   // ひとつも対象が無いなら、preview も 0/0 で返却
   if (!src.length) {
     return {
@@ -1047,13 +1193,12 @@ function generateShipmentsInternal(
       countLines: 0,
       headersAffected: 0,
       linesAffected: 0,
-      // 旧フロント互換用
       createdHeaders: 0,
       upsertedLines: 0,
       // 新規：スキップ数（確定済みのため生成対象外）
       skippedHeaders: 0,
       skippedLines: 0,
-      reasons, // ★追加
+      reasons,
     };
   }
 
@@ -1115,6 +1260,9 @@ function generateShipmentsInternal(
       // 新規：プレビュー時点でスキップされる件数
       skippedHeaders,
       skippedLines,
+      // compat（旧UI向け。プレビューでも件数を返す）
+      createdHeaders: countHeaders,
+      upsertedLines: countLines,
       reasons, // ★追加
     };
   }
@@ -1159,7 +1307,7 @@ function generateShipmentsInternal(
     INSERT INTO shipment_lines
       (shipment_id, item_id, ordered_qty, ship_qty, unit_price, amount)
     VALUES
-      (@headerId, @itemId, @qty, @qty, @unitPrice, @amount)
+    (@shipmentId, @itemId, @qty, @qty, @unitPrice, @amount)
     ON CONFLICT(shipment_id, item_id) DO UPDATE SET
       ordered_qty = excluded.ordered_qty,
       ship_qty    = excluded.ship_qty,
@@ -1181,10 +1329,10 @@ function generateShipmentsInternal(
     for (const r of src) {
       const key = `${r.vendorId}|${r.storeId}|${r.deliveryDate}`;
 
-      let headerId = headerKeyToId.get(key);
+      let shipmentId = headerKeyToId.get(key);
       let status = headerKeyToStatus.get(key);
 
-      if (headerId == null) {
+      if (shipmentId == null) {
         const existing = getHeader.get({
           vendorId: r.vendorId,
           destinationId: r.storeId,
@@ -1192,7 +1340,7 @@ function generateShipmentsInternal(
         }) as { id?: number; status?: string } | undefined;
 
         if (existing?.id) {
-          headerId = existing.id;
+          shipmentId = existing.id
           status = existing.status ?? "open";
         } else {
           // 新規ヘッダ作成
@@ -1214,11 +1362,11 @@ function generateShipmentsInternal(
             deliveryDate: r.deliveryDate,
           }) as { id: number; status?: string };
 
-          headerId = h.id;
+          shipmentId = h.id;
           status = h.status ?? "open";
         }
 
-        headerKeyToId.set(key, headerId);
+        headerKeyToId.set(key, shipmentId);
         headerKeyToStatus.set(key, status!);
       }
 
@@ -1268,7 +1416,7 @@ function generateShipmentsInternal(
       const amount = unitPrice * qty;
 
       const rr = insLine.run({
-        headerId,
+        shipmentId,
         itemId: r.itemId,
         qty,
         unitPrice,
@@ -1295,7 +1443,7 @@ function generateShipmentsInternal(
     countLines: upsertedLines,
     skippedHeaders,
     skippedLines,
-    // 旧フロント互換用
+    // compat（旧UI向け。将来削除予定）
     createdHeaders,           // 純粋な「新規ヘッダ作成数」
     upsertedLines,
   };

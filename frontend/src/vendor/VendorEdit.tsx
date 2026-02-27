@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import type { VendorOrderLine, VendorOrderHeader, TempZone, MasterItem, MasterStore, MasterVendor } from "./apiVendor";
 import { ymd } from "../utils/date"
 import {
@@ -13,6 +13,7 @@ import {
   listVendors
 } from "./apiVendor";
 
+import { TEMP_ZONES, TEMP_ZONE_LABEL } from "../domain/codes";
 
 // ID 正規化（ゼロ埋め固定長）
 const ID = {
@@ -22,14 +23,14 @@ const ID = {
 };
 
 type Props = {
-  headerId: string;
+  shipmentId: string;
   onBack: () => void;
   /** App 側で解決した初期 vendorId（任意） */
   initialVendorId?: string;
 };
 
 
-export function VendorEdit({ headerId, onBack, initialVendorId }: Props) {
+export function VendorEdit({ shipmentId, onBack, initialVendorId }: Props) {
   const [header, setHeader] = useState<VendorOrderHeader | null>(null);
   const [lines, setLines] = useState<VendorOrderLine[]>([]);
   const [headerDraft, setHeaderDraft] = useState<{ deliveryDate: string; vendorId: string; destinationId: string; destinationName: string }>({
@@ -60,7 +61,7 @@ export function VendorEdit({ headerId, onBack, initialVendorId }: Props) {
 
   // ルータから来ない場合に備え、ハッシュからも拾う保険
   const headerIdFromHash = new URLSearchParams(location.hash.split("?")[1] || "").get("id") || "new";
-  const headerIdUse = headerId && headerId !== "new" ? headerId : headerIdFromHash;
+  const headerIdUse = shipmentId && shipmentId !== "new" ? shipmentId : headerIdFromHash;
 
   // 管理者は true にすると vendorId も編集可
   const IS_MANAGER = false;
@@ -110,7 +111,6 @@ export function VendorEdit({ headerId, onBack, initialVendorId }: Props) {
         });
       }
     })();
-  // }, [headerId, isNew]);
   }, [headerIdUse, isNew]);
 
   useEffect(() => {
@@ -152,7 +152,7 @@ export function VendorEdit({ headerId, onBack, initialVendorId }: Props) {
     return lines
       .map((l) => ({
         ...l,
-        headerId: hid,
+        shipmentId: hid,
         itemId: ID.item(l.itemId || ""),
         itemName: l.itemName ?? "",
         unit: l.unit ?? "",
@@ -171,14 +171,14 @@ export function VendorEdit({ headerId, onBack, initialVendorId }: Props) {
     const dt  = sessionStorage.getItem("shipments.dateTo") || "";
     const vid = sessionStorage.getItem("shipments.vendorId") || "";
     const did = sessionStorage.getItem("shipments.destinationId") || "";
-    const hid = sessionStorage.getItem("shipments.headerId") || "";
+    const hid = sessionStorage.getItem("shipments.shipmentId") || "";
 
     const q = new URLSearchParams();
     if (df) q.set("dateFrom", df);
     if (dt) q.set("dateTo", dt);
     if (vid) q.set("vendorId", vid);
     if (did) q.set("destinationId", did);
-    if (hid) q.set("headerId", hid);
+    if (hid) q.set("shipmentId", hid);
     if (selectId) q.set("selectId", selectId);
 
     const qs = q.toString();
@@ -452,10 +452,11 @@ export function VendorEdit({ headerId, onBack, initialVendorId }: Props) {
                     onChange={(e)=> setLines(prev => prev.map((x,idx)=> idx===i ? { ...x, tempZone: (e.target.value || undefined) as TempZone | undefined } : x))}
                     className="border rounded px-2 py-1 w-24"
                   >
-                    <option value="">未設定</option>
-                    <option value="ambient">常温</option>
-                    <option value="chilled">チルド</option>
-                    <option value="frozen">冷凍</option>
+                  {TEMP_ZONES.map((z) => (
+                    <option key={z} value={z}>
+                      {TEMP_ZONE_LABEL[z]}
+                    </option>
+                  ))}
                   </select>
                 </td>
                 {/* 受注数 */}
@@ -545,8 +546,7 @@ export function VendorEdit({ headerId, onBack, initialVendorId }: Props) {
                 ...prev,
                 {
                   lineId: nextId,
-                  // headerId,
-                  headerId: headerIdUse,
+                  shipmentId: headerIdUse,
                   itemId: "",
                   itemName: "",
                   unit: "",

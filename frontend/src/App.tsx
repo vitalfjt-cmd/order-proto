@@ -2,7 +2,7 @@ import React, { useEffect, useMemo, useState, Suspense } from "react";
 import { Input } from "@/components/ui/input";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Label } from "@/components/ui/label";
-import { ListOrdered, Truck, ClipboardCheck, History, Menu, Home  } from "lucide-react";
+import { ListOrdered, Truck, ClipboardCheck, History, Menu, Home, Settings  } from "lucide-react";
 import { motion } from "framer-motion";
 import { loadLatestDraftLike } from "./db";
 import { toCsvString, downloadCsv } from "./utils/csv";
@@ -12,6 +12,8 @@ import { orderingApi } from "./ordering/orderingApi";
 import type { OrderingSubmitRequest } from "./ordering/types";
 import { getBusinessDate, getTodayBusinessYmd, getCutoffAt, isPastCutoff } from "./utils/date";
 
+
+
 // 遅延ロード（必要時のみ読み込み）
 const VendorShipments = React.lazy(() =>
   import("./vendor/VendorShipments").then(m => ({ default: m.VendorShipments }))
@@ -19,9 +21,8 @@ const VendorShipments = React.lazy(() =>
 const VendorEdit = React.lazy(() =>
   import("./vendor/VendorEdit").then(m => ({ default: m.VendorEdit }))
 );
+const LazyHistoryPage = React.lazy(() => import("./HistoryPage"));
 
-const HistoryPage = React.lazy(() => import("./HistoryPage"));
-// ★ ここを追加
 const AuditView = React.lazy(() => import("./audit/AuditView"));
 
 // 店舗向け検品（/frontend/src/inspection 配下）
@@ -46,6 +47,8 @@ const StoreShipmentEdit = React.lazy(() =>
 const StoreMonthlySummary = React.lazy(() =>
   import("./store/StoreMonthlySummary").then(m => ({ default: m.StoreMonthlySummary }))
 );
+
+const MasterPage = React.lazy(() => import("./master/MasterPage"));
 
 // =========================
 //  OrderEntry（既存の発注画面）
@@ -137,15 +140,6 @@ export type SubmitLine = {
   unitPrice: number;
   vendorId: string;
   expectedArrivalDate?: string | null;
-};
-export type SubmitDto = {
-  storeId: string;
-  vendorMode: "all";
-  vendorId: null;
-  orderDate: string;
-  expectedArrivalDate?: string | null;
-  taxRate: number;
-  lines: SubmitLine[];
 };
 
 // --- Main Component: Order Entry ---
@@ -1216,7 +1210,8 @@ type Route =
   | 'storeShipments'
   | 'storeShipmentEdit'
   | 'storeStocks'
-  | 'storeMonthlySummary'; 
+  | 'storeMonthlySummary'
+  | 'master';
 
 export default function App() {
   const [route, setRoute] = useState<Route>('home');
@@ -1244,11 +1239,11 @@ export default function App() {
       // 出荷（一覧／編集）を優先順で解釈（edit → 一覧 → 旧 #shipments）
       if (
         h.startsWith('#/vendor/shipments/edit') ||
-        h.startsWith('#vendor/shipments/edit')    // 互換: もし既存で '#vendor/...' が来ても拾う
+        h.startsWith('#vendor/shipments/edit')
       ) {
         // クエリから編集IDを取り込む（new も可）
-        const hdr = q.get('id') || q.get('headerId') || 'new';
-        setEditId(hdr);
+        const shipmentId = q.get('id') || q.get('shipmentId') || 'new';
+        setEditId(shipmentId);
          // 併せて vendorId も保持（無ければ sessionStorage の直近値）
         const vid = q.get('vendorId')
           || sessionStorage.getItem('shipments.vendorId')
@@ -1257,7 +1252,7 @@ export default function App() {
         setRoute('vendorEdit');
       } else if (
         h.startsWith('#/vendor/shipments') ||
-        h.startsWith('#vendor/shipments') ||       // 互換
+        h.startsWith('#vendor/shipments') ||
         h.startsWith('#shipments')                  // 旧式
       ) {
         setRoute('shipments');
@@ -1284,7 +1279,11 @@ export default function App() {
       ) {
         setRoute('storeMonthlySummary');
       }
-        
+      
+      else if (h.startsWith('#/master') || h.startsWith('#master')) {
+        setRoute('master');
+      }
+
       else if (h.startsWith('#home') || h === '' || h === '#') {
         setRoute('home');              // ハッシュ無し or #home はホームへ
       } else {
@@ -1377,6 +1376,12 @@ export default function App() {
             active={route==='audit'}
             onClick={() => { location.hash = '#audit'; }}
           />
+          <NavItem
+            icon={<Settings size={16} />}
+            label="マスタ"
+            active={route === 'master'}
+            onClick={() => { location.hash = '#/master/vendor-weekly-rules'; }}
+          />
         </nav>
       </aside>
 
@@ -1409,28 +1414,28 @@ export default function App() {
           )}
           {route === 'vendorEdit' && (
             <VendorEdit
-              headerId={editId || 'new'}
+              shipmentId={editId || 'new'}
               onBack={() => setRoute('shipments')}
               initialVendorId={vendorIdForEdit || undefined}
             />
           )}
-          {route === 'inspection' && (
+
+          {route === "inspection" && (
             <VendorInspectionList
-              // dcId="DC01"
               dcId="600502"
               onBack={() => {
-                setRoute('order');
-                location.hash = '#order';
+                setRoute("order");
+                location.hash = "#order";
               }}
-              onEdit={(headerId) => {
-                setEditId(headerId);
-                setRoute('vendorEdit');
-                location.hash = `#/vendor/shipments/edit?id=${encodeURIComponent(headerId)}`;
+              onEdit={(shipmentId) => {
+                setEditId(shipmentId);
+                setRoute("vendorEdit");
+                location.hash = `#/vendor/shipments/edit?id=${encodeURIComponent(shipmentId)}`;
               }}
             />
           )}
 
-          {route === 'history' && <HistoryPage />}
+          {route === 'history' && <LazyHistoryPage />}
 
           {route === 'storeInspection' && (
             <StoreInspectionList
@@ -1443,7 +1448,7 @@ export default function App() {
 
           {route === 'storeInspectionEdit' && (
             <StoreInspectionEdit
-              headerId={inspectEditId || ''}
+              inspectionId={inspectEditId || ''}
               onBack={() => setRoute('storeInspection')}
               ownerId={storeOwnerId}
             />
@@ -1451,7 +1456,6 @@ export default function App() {
 
           {route === 'storeShipments' && (
             <StoreShipmentList
-              // storeId={storeOwnerId}
               storeId={storeShipmentsStoreId}
               onChangeStoreId={(sid) => setStoreShipmentsStoreId(sid)}
               onCreate={() => {
@@ -1468,7 +1472,7 @@ export default function App() {
           {route === 'storeShipmentEdit' && (
             <StoreShipmentEdit
               storeId={storeShipmentsStoreId}
-              headerId={storeShipmentEditId}
+              shipmentId={storeShipmentEditId}
               onBack={() => {
                 setRoute('storeShipments');
               }}
@@ -1484,6 +1488,8 @@ export default function App() {
           {route === 'storeMonthlySummary' && (
             <StoreMonthlySummary defaultStoreId={storeOwnerId} />
           )}
+
+          {route === 'master' && <MasterPage />}
 
         </Suspense>
       </main>

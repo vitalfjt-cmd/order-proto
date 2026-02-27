@@ -31,8 +31,8 @@ export function buildPickingCsv(
   // 並び: 納品先ID → 温度帯 → 品目コード
   const hMap = new Map(headers.map((h) => [h.id, h]));
   const sorted = [...lines].sort((a, b) => {
-    const ha = hMap.get(a.headerId)!;
-    const hb = hMap.get(b.headerId)!;
+    const ha = hMap.get(a.shipmentId)!;
+    const hb = hMap.get(b.shipmentId)!;
     if (ha.destinationId !== hb.destinationId) return ha.destinationId.localeCompare(hb.destinationId);
     const tzA = a.tempZone || "zzz";
     const tzB = b.tempZone || "zzz";
@@ -41,7 +41,7 @@ export function buildPickingCsv(
   });
 
   for (const ln of sorted) {
-    const h = hMap.get(ln.headerId)!;
+    const h = hMap.get(ln.shipmentId)!;
     if ((ln.shipQty ?? 0) === 0) continue; // 0は出さない
     rows.push([
       h.deliveryDate,
@@ -49,12 +49,12 @@ export function buildPickingCsv(
       h.destinationId,
       h.destinationName ?? "",
       ln.itemId,
-      ln.itemName,
+      ln.itemName ?? "",
       ln.spec ?? "",
       ln.tempZone ?? "",
       ln.orderedQty,
       ln.shipQty,
-      ln.unit,
+      ln.unit ?? "",
       ln.note ?? "",
     ]);
   }

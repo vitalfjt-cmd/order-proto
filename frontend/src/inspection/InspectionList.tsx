@@ -1,5 +1,4 @@
-// import React, { useMemo, useState } from "react";
-import React, { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { searchInspections, confirmInspections, auditInspections  } from "./inspectionApi";
 import type { OwnerType, InspectionHeader, InspectionLine } from "./inspectionApi";
 import { buildDiscrepancyCsv } from "./discrepancyCsv";
@@ -7,11 +6,15 @@ import { downloadCsv } from "../utils/csv";
 import { logEvent } from "../auditlog";
 import { VendorModal } from "../components/VendorModal";
 import { ymd } from "../utils/date";
+import {
+  INSPECTION_LIST_STATUS_FILTER_OPTIONS,
+  type InspectionListStatusFilter,
+} from "../domain/codes";
 
-type Props = {
+export type Props = {
   ownerType: OwnerType;   // "STORE" | "DC"
   ownerId: string;        // 例: "0001" / "DC01"
-  onEdit: (headerId: string) => void;
+  onEdit: (inspectionId: string) => void;
   onBack?: () => void;
 };
 
@@ -25,7 +28,7 @@ export function InspectionList({ ownerType, ownerId, onEdit, onBack }: Props) {
   const [selected, setSelected] = useState<Record<string, boolean>>({});
   const [vendorModalOpen, setVendorModalOpen] = useState(false);
   // 状態フィルタ: all / open / confirmed
-  const [statusFilter, setStatusFilter] = useState<"all" | "open" | "confirmed">("all");
+  const [statusFilter, setStatusFilter] = useState<InspectionListStatusFilter>("all");
   // 差異ありのみ表示
   const [showOnlyDiff, setShowOnlyDiff] = useState<boolean>(false);
 
@@ -137,7 +140,7 @@ export function InspectionList({ ownerType, ownerId, onEdit, onBack }: Props) {
     for (const h of targets) {
       logEvent({
         type: "inspection.confirm",
-        headerId: String(h.id),
+        inspectionId: String(h.id),
         ownerId: ownerId,            // ← この一覧コンポーネントが持っている ownerId を使用
         vendorId: h.vendorId,
         destinationId: h.destinationId,
@@ -170,7 +173,7 @@ async function handleAudit(): Promise<void> {
   for (const h of targets) {
     logEvent({
       type: "inspection.audit",
-      headerId: String(h.id),
+      inspectionId: String(h.id),
       ownerId: ownerId,            // DC側一覧の ownerId（例: DC01）
       vendorId: h.vendorId,
       destinationId: h.destinationId,
@@ -272,14 +275,14 @@ async function handleAudit(): Promise<void> {
           状態
           <select
             value={statusFilter}
-            onChange={(e) =>
-              setStatusFilter(e.target.value as "all" | "open" | "confirmed")
-            }
+            onChange={(e) => setStatusFilter(e.target.value as InspectionListStatusFilter)}
             className="border rounded px-2 py-1 ml-1"
           >
-            <option value="all">全て</option>
-            <option value="open">未検収</option>
-            <option value="confirmed">検収済み</option>
+            {INSPECTION_LIST_STATUS_FILTER_OPTIONS.map((o) => (
+              <option key={o.value} value={o.value}>
+                {o.label}
+              </option>
+            ))}
           </select>
         </label>
         <label className="flex items-center gap-1">

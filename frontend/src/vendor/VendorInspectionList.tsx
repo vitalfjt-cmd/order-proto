@@ -1,24 +1,22 @@
+// frontend/src/vendor/VendorInspectionList.tsx
+import { Suspense, lazy } from "react";
+import type { Props as InspectionListProps } from "../inspection/InspectionList";
 
-import React from "react";
-import { InspectionList } from "../inspection/InspectionList";
-import type { OwnerType } from "../inspection/inspectionApi";
+const InspectionList = lazy(async () => {
+  const mod = await import("../inspection/InspectionList");
+  return { default: mod.InspectionList }; // ★ named export を lazy の default に変換
+});
 
-// DC 用の検品一覧ラッパー
-// - ownerType は常に "DC"
-// - ownerId に DC のID（例: "DC01"）を渡す想定
 type Props = {
-  dcId: string;                         // 例: "DC01"
-  onEdit: (headerId: string) => void;   // 詳細画面への遷移など
-  onBack?: () => void;
+  dcId: string;
+  onEdit: InspectionListProps["onEdit"];
+  onBack?: InspectionListProps["onBack"];
 };
 
 export function VendorInspectionList({ dcId, onEdit, onBack }: Props) {
   return (
-    <InspectionList
-      ownerType={"DC" as OwnerType}
-      ownerId={dcId}
-      onEdit={onEdit}
-      onBack={onBack}
-    />
+    <Suspense fallback={<div className="p-4 text-sm text-muted-foreground">読み込み中...</div>}>
+      <InspectionList ownerType="DC" ownerId={dcId} onEdit={onEdit} onBack={onBack} />
+    </Suspense>
   );
 }

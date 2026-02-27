@@ -1,5 +1,5 @@
 // frontend/src/store/StoreShipmentEdit.tsx
-import React, { useEffect, useState } from "react";
+import { useEffect, useState } from "react";
 import { toCsvString, downloadCsv } from "../utils/csv";
 import { ymd } from "../utils/date"
 import {
@@ -14,9 +14,11 @@ import {
   type MovableItem,
 } from "./storeShipmentsApi";
 
+import { STORE_SHIPMENT_MOVE, STORE_SHIPMENT_MOVE_LABEL } from "../domain/codes"
+
 type Props = {
   storeId: string;              // 出荷元店舗（固定）
-  headerId: number | null;      // null のとき新規
+  shipmentId: number | null;      // null のとき新規
   onBack: () => void;
 };
 
@@ -29,7 +31,7 @@ type LineForm = {
   memo: string;
 };
 
-export function StoreShipmentEdit({ storeId, headerId, onBack }: Props) {
+export function StoreShipmentEdit({ storeId, shipmentId, onBack }: Props) {
   const today = ymd(new Date());
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -105,12 +107,7 @@ export function StoreShipmentEdit({ storeId, headerId, onBack }: Props) {
 
   // 編集時: データ取得
   useEffect(() => {
-    if (!headerId) {
-      // 新規：空明細1行だけ用意
-      // setLines([
-      //   { key: "ln-0", itemId: "", qty: "", unit: "", memo: "" },
-        
-      // ]);
+    if (!shipmentId) {
       setLines([{ key: "ln-0", itemId: "", itemName: "", qty: "", unit: "", memo: "" }]);
       setShipmentDate(today);
       setMovementType("TRANSFER");
@@ -122,7 +119,7 @@ export function StoreShipmentEdit({ storeId, headerId, onBack }: Props) {
     (async () => {
       setLoading(true);
       try {
-        const detail = await fetchStoreShipmentDetail(headerId);
+        const detail = await fetchStoreShipmentDetail(shipmentId);
         setShipmentDate(detail.header.shipmentDate);
         setMovementType(detail.header.movementType);
         setToStoreId(detail.header.toStoreId ?? "");
@@ -147,7 +144,7 @@ export function StoreShipmentEdit({ storeId, headerId, onBack }: Props) {
       }
     })();
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [headerId]);
+  }, [shipmentId]);
 
   function addLine() {
     setLines(prev => [
@@ -206,7 +203,7 @@ export function StoreShipmentEdit({ storeId, headerId, onBack }: Props) {
     ];
 
     const body: (string | number)[][] = parsed.map((l) => [
-      headerId ?? "",
+      shipmentId ?? "",
       storeId,
       shipmentDate,
       movementType,
@@ -223,7 +220,7 @@ export function StoreShipmentEdit({ storeId, headerId, onBack }: Props) {
     const csv = toCsvString([header, ...body], { delimiter: "," });
 
     const ymd = shipmentDate.replace(/-/g, "");
-    const idPart = headerId ? String(headerId) : "new";
+    const idPart = shipmentId ? String(shipmentId) : "new";
     downloadCsv(`store_shipment_${storeId}_${ymd}_${idPart}.csv`, csv);
   }
 
@@ -258,7 +255,7 @@ export function StoreShipmentEdit({ storeId, headerId, onBack }: Props) {
 
     const payload: SaveStoreShipmentPayload = {
       header: {
-        id: headerId ?? undefined,
+        id: shipmentId ?? undefined,
         fromStoreId: storeId,
         toStoreId: movementType === "TRANSFER" ? toStoreId.trim() || null : null,
         movementType,
@@ -275,7 +272,7 @@ export function StoreShipmentEdit({ storeId, headerId, onBack }: Props) {
         alert("保存に失敗しました。");
         return;
       }
-      alert(`保存しました（ID: ${res.headerId}）`);
+      alert(`保存しました（ID: ${res.shipmentId}）`);
 
       if (confirmAfterSave) {
         // 確定は一覧側の一括確定で行う想定にしておく
@@ -294,7 +291,7 @@ export function StoreShipmentEdit({ storeId, headerId, onBack }: Props) {
   return (
     <div className="p-3">
       <h1 className="text-xl font-bold mb-3">
-        店舗出荷入力（{headerId ? `ID: ${headerId}` : "新規"}）
+        店舗出荷入力（{shipmentId ? `ID: ${shipmentId}` : "新規"}）
       </h1>
 
       {loading ? (
@@ -329,9 +326,12 @@ export function StoreShipmentEdit({ storeId, headerId, onBack }: Props) {
                 }
                 className="border rounded px-2 py-1 w-full"
               >
-                <option value="TRANSFER">店舗移動</option>
-                <option value="DISPOSAL">廃棄</option>
-              </select>
+                {STORE_SHIPMENT_MOVE.map((mt) => (
+                  <option key={mt} value={mt}>
+                    {STORE_SHIPMENT_MOVE_LABEL[mt]}
+                  </option>
+                ))}
+             </select>
             </div>
             <label className="block text-slate-600 mb-1">
               出荷先店舗（店舗移動時）

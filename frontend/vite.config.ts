@@ -17,9 +17,7 @@ export default defineConfig({
       '/shipments': { target: 'http://localhost:8080', changeOrigin: true },
       '/vendor':   { target: 'http://localhost:8080', changeOrigin: true },
       '/master':   { target: 'http://localhost:8080', changeOrigin: true },
-      // ★ これを追加
       "/inspections":  { target: 'http://localhost:8080', changeOrigin: true },
-      // 互換
       '/stores':   { target: 'http://localhost:8080', changeOrigin: true },
       '/vendors':  { target: 'http://localhost:8080', changeOrigin: true },
       '/audit':  { target: 'http://localhost:8080', changeOrigin: true },

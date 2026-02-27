@@ -1,7 +1,9 @@
 // frontend/src/store/storeShipmentsApi.ts
 //---修正ｓ
-export type StoreShipmentStatus = "draft" | "confirmed";
-export type StoreShipmentMovementType = "TRANSFER" | "DISPOSAL";
+export type { InspectionStatus } from "../domain/codes";
+
+import type { StoreShipmentStatus, StoreShipmentMovementType } from "../domain/codes";
+export type { StoreShipmentStatus, StoreShipmentMovementType };
 
 export type StoreShipmentHeader = {
   id: number;
@@ -62,17 +64,15 @@ export type SearchStoreShipmentsParams = {
   slipNo?: string; // ★伝票番号（id）
 };
 
+
 async function getJson<T>(input: RequestInfo, init?: RequestInit): Promise<T> {
   const res = await fetch(input, {
-    headers: { Accept: "application/json" },
     credentials: "same-origin",
-    ...init,
+    ...(init ?? {}),
+    headers: { Accept: "application/json", ...(init?.headers ?? {}) },
   });
-  if (!res.ok) {
-    const text = await res.text();
-    throw new Error(`HTTP ${res.status}: ${text}`);
-  }
-  return res.json() as Promise<T>;
+  if (!res.ok) throw new Error(`HTTP ${res.status}: ${await res.text()}`);
+  return (await res.json()) as T;
 }
 
 // 一覧取得
@@ -128,7 +128,7 @@ export async function confirmStoreShipments(
 // 保存（新規/更新共通）
 export async function saveStoreShipment(
   payload: SaveStoreShipmentPayload
-): Promise<{ ok: boolean; headerId: number }> {
+): Promise<{ ok: boolean; shipmentId: number }> {
   const res = await fetch("/store/shipments/save", {
     method: "POST",
     headers: {
@@ -143,7 +143,7 @@ export async function saveStoreShipment(
     const text = await res.text();
     throw new Error(`HTTP ${res.status}: ${text}`);
   }
-  return res.json() as Promise<{ ok: boolean; headerId: number }>;
+  return res.json() as Promise<{ ok: boolean; shipmentId: number }>;
 }
 
 // ★ 店舗マスタ（モーダル用）

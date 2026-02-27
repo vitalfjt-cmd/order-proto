@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import type { OrderListResponse, OrderDetail } from "./ordering/types";
 import { orderingApi } from "./ordering/orderingApi";
 import { ymd } from "./utils/date"

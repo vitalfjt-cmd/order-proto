@@ -8,8 +8,7 @@ const DB_PATH =
   path.resolve(__dirname, '../db/data.sqlite');
 
 export const db = new Database(DB_PATH, {
-  // 必要なら SQL ログ: (msg)=>console.log(msg)
-  // verbose: (msg) => console.log('[sql]', msg),
+
 });
 
 // ---- 推奨 PRAGMA ----

@@ -234,7 +234,7 @@ storeShipments.get('/store/shipments/:id', (req, res) => {
         l.memo,
         l.unit_cost AS unitCost,
         l.amount,
-        i.name AS item_name
+        i.name AS itemName
       FROM store_shipment_lines l
       LEFT JOIN items i ON i.id = l.item_id
       WHERE l.header_id = ?
@@ -258,11 +258,11 @@ storeShipments.get('/store/shipments/:id', (req, res) => {
       id: l.id,
       lineNo: l.line_no,
       itemId: l.item_id,
-      itemName: l.item_name ?? null,   // ★追加
+      itemName: l.itemName ?? null,
       qty: l.qty,
       unit: l.unit ?? null,
       memo: l.memo ?? null,
-      unitCost: Number(l.unit_cost ?? 0),
+      unitCost: Number(l.unitCost ?? 0),
       amount: Number(l.amount ?? 0),
     })),
   });
@@ -332,9 +332,9 @@ storeShipments.post('/store/shipments/save', (req, res) => {
   }
 
   const tx = db.transaction(() => {
-    let headerId = Number(h.id || 0);
+    let shipmentId = Number(h.id || 0);
 
-    if (headerId > 0) {
+    if (shipmentId > 0) {
       // 既存ヘッダ更新
       db.prepare(
         `
@@ -348,7 +348,7 @@ storeShipments.post('/store/shipments/save', (req, res) => {
            WHERE id = @id
         `
       ).run({
-        id: headerId,
+        id: shipmentId,
         fromStoreId,
         toStoreId,
         movementType,
@@ -362,7 +362,7 @@ storeShipments.post('/store/shipments/save', (req, res) => {
           DELETE FROM store_shipment_lines
            WHERE header_id = ?
         `
-      ).run(headerId);
+      ).run(shipmentId);
     } else {
       // 新規ヘッダ
       const hr = db.prepare(
@@ -396,7 +396,7 @@ storeShipments.post('/store/shipments/save', (req, res) => {
         memo,
       });
 
-      headerId = Number(hr.lastInsertRowid);
+      shipmentId = Number(hr.lastInsertRowid);
     }
 
     // 明細登録の直前に追加
@@ -461,7 +461,7 @@ storeShipments.post('/store/shipments/save', (req, res) => {
           amount
         )
         VALUES (
-          @headerId,
+          @shipmentId,
           @lineNo,
           @itemId,
           @qty,
@@ -478,7 +478,7 @@ storeShipments.post('/store/shipments/save', (req, res) => {
       const amount = Number(ln.qty) * unitCost;
 
       insLine.run({
-        headerId,
+        shipmentId,
         lineNo: idx + 1,
         itemId: ln.itemId,
         qty: ln.qty,
@@ -488,7 +488,7 @@ storeShipments.post('/store/shipments/save', (req, res) => {
         amount,
       });
     });
-    return headerId;
+    return shipmentId;
   });
 
   let newId: number;
@@ -502,7 +502,7 @@ storeShipments.post('/store/shipments/save', (req, res) => {
     return res.status(500).json({ error: 'failed to save store shipment' });
   }
 
-  res.json({ ok: true, headerId: newId });
+  res.json({ ok: true, shipmentId: newId });
 });
 
 // ===================================

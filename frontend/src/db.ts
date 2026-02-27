@@ -48,31 +48,6 @@ t.onabort = () => reject(t.error);
 });
 }
 
-
-export function makeOrderId(params: { storeId: string | null; vendorMode: "all" | "single"; vendorId: string | null; requestDate: string; }): string {
-const { storeId, vendorMode, vendorId, requestDate } = params;
-return [storeId ?? "-", vendorMode, vendorId ?? "-", requestDate].join("|");
-}
-
-
-export async function saveDraft(record: PersistedOrderDraft): Promise<void> {
-return tx("readwrite", (store) => new Promise((resolve, reject) => {
-const req = store.put(record);
-req.onsuccess = () => resolve();
-req.onerror = () => reject(req.error);
-}));
-}
-
-
-export async function loadById(id: string): Promise<PersistedOrderDraft | undefined> {
-return tx("readonly", (store) => new Promise((resolve, reject) => {
-const req = store.get(id);
-req.onsuccess = () => resolve(req.result as PersistedOrderDraft | undefined);
-req.onerror = () => reject(req.error);
-}));
-}
-
-
 export async function loadLatestDraftLike(prefix: string): Promise<PersistedOrderDraft | undefined> {
 // prefix = storeId|vendorMode|vendorId| までを想定（末尾に "|" を含める）
 return tx("readonly", async (store) => {
@@ -90,13 +65,4 @@ req.onerror = () => reject(req.error);
 });
 return all.sort((a, b) => (a.updatedAt < b.updatedAt ? 1 : -1))[0];
 });
-}
-
-
-export async function deleteById(id: string): Promise<void> {
-return tx("readwrite", (store) => new Promise((resolve, reject) => {
-const req = store.delete(id);
-req.onsuccess = () => resolve();
-req.onerror = () => reject(req.error);
-}));
 }

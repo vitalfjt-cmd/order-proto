@@ -1,5 +1,5 @@
 // frontend/src/store/StoreShipmentList.tsx
-import React, { useEffect, useState } from "react";
+import { useEffect, useState } from "react";
 import { ymd } from "../utils/date"
 import {
   searchStoreShipments,
@@ -10,22 +10,19 @@ import {
   listMasterStores,
   type MasterStore,
 } from "./storeShipmentsApi";
+import {
+  STORE_SHIPMENT_MOVE_LABEL,
+  STORE_SHIPMENT_MOVE_OPTIONS,
+  STORE_SHIPMENT_STATUS_LABEL,
+  STORE_SHIPMENT_STATUS_OPTIONS,
+} from "../domain/codes";
+
 
 type Props = {
   storeId: string;               // 例: "0002"
   onChangeStoreId?: (storeId: string) => void;
   onCreate?: () => void;         // 新規作成（Step4 で利用予定）
-  onEdit?: (headerId: number) => void; // 編集画面へ（Step4 で利用予定）
-};
-
-const movementTypeLabel: Record<StoreShipmentMovementType, string> = {
-  TRANSFER: "店舗移動",
-  DISPOSAL: "廃棄",
-};
-
-const statusLabel: Record<StoreShipmentStatus, string> = {
-  draft: "下書き",
-  confirmed: "確定",
+  onEdit?: (shipmentId: number) => void; // 編集画面へ（Step4 で利用予定）
 };
 
 export default function StoreShipmentList({ storeId, onChangeStoreId, onCreate, onEdit }: Props) {
@@ -179,8 +176,11 @@ export default function StoreShipmentList({ storeId, onChangeStoreId, onCreate, 
             className="border rounded px-2 py-1 ml-1"
           >
             <option value="">(すべて)</option>
-            <option value="TRANSFER">店舗移動</option>
-            <option value="DISPOSAL">廃棄</option>
+            {STORE_SHIPMENT_MOVE_OPTIONS.map((o) => (
+              <option key={o.value} value={o.value}>
+                {o.label}
+              </option>
+            ))}
           </select>
         </label>
         <label>
@@ -193,8 +193,11 @@ export default function StoreShipmentList({ storeId, onChangeStoreId, onCreate, 
             className="border rounded px-2 py-1 ml-1"
           >
             <option value="">(すべて)</option>
-            <option value="draft">下書き</option>
-            <option value="confirmed">確定</option>
+            {STORE_SHIPMENT_STATUS_OPTIONS.map((o) => (
+              <option key={o.value} value={o.value}>
+                {o.label}
+              </option>
+            ))}
           </select>
         </label>
         <label>
@@ -316,7 +319,7 @@ export default function StoreShipmentList({ storeId, onChangeStoreId, onCreate, 
               </td>
               <td className="font-mono">{h.id}</td>
               <td>{h.shipmentDate}</td>
-              <td>{movementTypeLabel[h.movementType]}</td>
+              <td>{STORE_SHIPMENT_MOVE_LABEL[h.movementType]}</td>
               <td className="font-mono">{h.fromStoreId}</td>
               <td className="font-mono">{h.toStoreId ?? "-"}</td>
               <td className="truncate" title={h.memo ?? ""}>
@@ -330,7 +333,7 @@ export default function StoreShipmentList({ storeId, onChangeStoreId, onCreate, 
                       : "text-slate-700"
                   }
                 >
-                  {statusLabel[h.status]}
+                  {STORE_SHIPMENT_STATUS_LABEL[h.status]}
                 </span>
                 {onEdit && (
                   <button

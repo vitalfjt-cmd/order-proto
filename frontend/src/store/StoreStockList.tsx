@@ -1,5 +1,5 @@
 // frontend/src/store/StoreStockList.tsx
-import React, { useEffect, useState } from "react";
+import { useEffect, useState } from "react";
 import { toCsvString, downloadCsv } from "../utils/csv";
 import { todayYmd } from "../utils/date"
 

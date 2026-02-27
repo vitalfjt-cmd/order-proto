@@ -6,32 +6,31 @@ import { db } from '../db';
 export const audit = Router();
 
 // 起動時にテーブルを用意（なければ作成）
+// 1) create table only
 db.exec(`
 CREATE TABLE IF NOT EXISTS audit_logs (
-  id               TEXT PRIMARY KEY,   -- UUID（フロント生成）
-  at               TEXT NOT NULL,      -- ISO文字列
-  actor            TEXT NOT NULL,      -- 実行ユーザー
-  type             TEXT NOT NULL,      -- shipment.confirm 等
-  header_id        TEXT,
+  id               TEXT PRIMARY KEY,
+  at               TEXT NOT NULL,
+  actor            TEXT NOT NULL,
+  type             TEXT NOT NULL,
+  shipment_id      TEXT,
   owner_id         TEXT,
   vendor_id        TEXT,
   destination_id   TEXT,
   destination_name TEXT,
   delivery_date    TEXT,
-  memo             TEXT
+  memo             TEXT,
+  inspection_id    TEXT
 );
+`);
 
-CREATE INDEX IF NOT EXISTS idx_audit_logs_at
-  ON audit_logs(at);
-
-CREATE INDEX IF NOT EXISTS idx_audit_logs_header_id
-  ON audit_logs(header_id);
-
-CREATE INDEX IF NOT EXISTS idx_audit_logs_vendor
-  ON audit_logs(vendor_id);
-
-CREATE INDEX IF NOT EXISTS idx_audit_logs_destination
-  ON audit_logs(destination_id);
+// 3) indexes (no duplicates)
+db.exec(`
+CREATE INDEX IF NOT EXISTS idx_audit_logs_at              ON audit_logs(at);
+CREATE INDEX IF NOT EXISTS idx_audit_logs_shipment_id     ON audit_logs(shipment_id);
+CREATE INDEX IF NOT EXISTS idx_audit_logs_inspection_id   ON audit_logs(inspection_id);
+CREATE INDEX IF NOT EXISTS idx_audit_logs_vendor_id       ON audit_logs(vendor_id);
+CREATE INDEX IF NOT EXISTS idx_audit_logs_destination_id  ON audit_logs(destination_id);
 `);
 
 type AuditRow = {
@@ -39,7 +38,8 @@ type AuditRow = {
   at: string;
   actor: string;
   type: string;
-  header_id: string | null;
+  shipment_id: string | null;
+  inspection_id: string | null;
   owner_id: string | null;
   vendor_id: string | null;
   destination_id: string | null;
@@ -53,7 +53,8 @@ type AuditEventDto = {
   at: string;
   actor: string;
   type: string;
-  headerId: string | null;
+  shipmentId: string | null;
+  inspectionId: string | null;
   ownerId: string | null;
   vendorId: string | null;
   destinationId: string | null;
@@ -68,7 +69,8 @@ function rowToDto(r: AuditRow): AuditEventDto {
     at: r.at,
     actor: r.actor,
     type: r.type,
-    headerId: r.header_id,
+    shipmentId: r.shipment_id,
+    inspectionId: r.inspection_id ?? null,
     ownerId: r.owner_id,
     vendorId: r.vendor_id,
     destinationId: r.destination_id,
@@ -97,16 +99,16 @@ audit.post('/events', (req, res) => {
 
     db.prepare(
       `
-      INSERT INTO audit_logs (
+      INSERT OR IGNORE INTO audit_logs (
         id, at, actor, type,
-        header_id, owner_id, vendor_id,
+        shipment_id, owner_id, vendor_id,
         destination_id, destination_name,
-        delivery_date, memo
+        delivery_date, memo, inspection_id
       ) VALUES (
         @id, @at, @actor, @type,
-        @headerId, @ownerId, @vendorId,
+        @shipmentId, @ownerId, @vendorId,
         @destinationId, @destinationName,
-        @deliveryDate, @memo
+        @deliveryDate, @memo, @inspectionId
       )
     `
     ).run({
@@ -114,13 +116,14 @@ audit.post('/events', (req, res) => {
       at,
       actor,
       type: body.type,
-      headerId: body.headerId ?? null,
+      shipmentId: body.shipmentId ?? null,
       ownerId: body.ownerId ?? null,
       vendorId: body.vendorId ?? null,
       destinationId: body.destinationId ?? null,
       destinationName: body.destinationName ?? null,
       deliveryDate: body.deliveryDate ?? null,
       memo: body.memo ?? null,
+      inspectionId: body.inspectionId ?? null,
     });
 
     res.json({ ok: true });
@@ -131,7 +134,7 @@ audit.post('/events', (req, res) => {
 });
 
 // ===== 監査ログ検索 =====
-// /audit/events?dateFrom=YYYY-MM-DD&dateTo=YYYY-MM-DD&type=...&headerId=...&vendorId=...&destinationId=...
+// /audit/events?dateFrom=YYYY-MM-DD&dateTo=YYYY-MM-DD&type=...&shipmentId=...&vendorId=...&destinationId=...
 audit.get('/events', (req, res) => {
   try {
     const q = req.query as Record<string, string | undefined>;
@@ -147,9 +150,13 @@ audit.get('/events', (req, res) => {
       where.push('type = @type');
       params.type = q.type;
     }
-    if (q.headerId) {
-      where.push('header_id = @headerId');
-      params.headerId = q.headerId;
+    if (q.shipmentId) {
+      where.push('shipment_id = @shipmentId');
+      params.shipmentId = q.shipmentId;
+    }
+    if (q.inspectionId) {
+      where.push('inspection_id = @inspectionId');
+      params.inspectionId = q.inspectionId;
     }
     if (q.vendorId) {
       where.push('vendor_id = @vendorId');
@@ -176,9 +183,9 @@ const rows = db
         `
         SELECT
           id, at, actor, type,
-          header_id, owner_id, vendor_id,
+          shipment_id, owner_id, vendor_id,
           destination_id, destination_name,
-          delivery_date, memo
+          delivery_date, memo, inspection_id
         FROM audit_logs
         ${whereSql}
         ORDER BY at DESC, id DESC

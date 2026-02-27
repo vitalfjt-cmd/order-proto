@@ -1,6 +1,5 @@
 import express from 'express';
 import cors from 'cors';
-import bodyParser from 'body-parser';
 import { ordering } from './api/ordering';
 import { master } from './api/master';
 import { shipments } from './api/shipments';
@@ -13,7 +12,7 @@ import { stocks } from "./api/stocks";
 
 const app = express();
 app.use(cors());
-app.use(bodyParser.json({ limit: '2mb' }));
+app.use(express.json({ limit: '2mb' }));
 
 app.get('/health', (_req, res) => res.json({ ok: true }));
 app.use('/master', master);
@@ -23,6 +22,8 @@ app.use("/", inspections);      // ★ 追加（パスは /inspections ...）
 app.use('/', storeShipments);
 app.use('/audit', audit);
 app.use("/stocks", stocks);
+app.use("/master", master);
+
 // 追加
 // 店舗マスタ（発注画面 & 履歴用）
 // 役割: { stores: [{ id, code, name }, ...] } を返す
@@ -60,4 +61,4 @@ app.get('/vendors', (_req, res) => {
 });
 
 const PORT = Number(process.env.PORT || 8080);
-app.listen(PORT, () => console.log(`[server] listening on http://localhost:${PORT}`));
+app.listen(PORT);

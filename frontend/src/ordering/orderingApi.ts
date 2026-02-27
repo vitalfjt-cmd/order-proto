@@ -28,7 +28,6 @@
        body: JSON.stringify(dto),
      }),
 
-   // --- 互換: HistoryPage などで URLSearchParams を組み立てている場合用 ---
    listRaw: (q: URLSearchParams) =>
      fetchJson<OrderListResponse>(`/ordering/list?${q.toString()}`),
  

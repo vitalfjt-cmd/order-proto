@@ -1,9 +1,13 @@
 // --- API raw types (from backend v_* views) -----------------
+import { SHIPMENT_STATUS, toTempZoneOrUndef, type ShipmentStatus } from "../domain/codes";
+import type { TempZone } from "../domain/codes";
+export type { TempZone } from "../domain/codes";
+
 export type ApiShipmentHeader = {
   id: number | string;
   orderDate: string;
   deliveryDate: string;
-  status: "open" | "confirmed" | "canceled";
+  status: ShipmentStatus;
   vendorId: string;
   vendorName?: string | null;
   destinationId: string;
@@ -12,7 +16,7 @@ export type ApiShipmentHeader = {
 
 export type ApiShipmentLine = {
   id: number | string;
-  headerId?: number | string;
+  shipmentId?: number | string;
 
   itemId: string;
   itemName?: string | null;
@@ -44,7 +48,7 @@ export type VendorOrderHeader = {
 };
 export type VendorOrderLine = {
   lineId: string;
-  headerId: string;
+  shipmentId: string;
   itemId: string;
   itemName?: string;
   orderedQty: number;
@@ -53,7 +57,7 @@ export type VendorOrderLine = {
   amount?: number;
   unit?: string;
   spec?: string;
-  tempZone?: 'ambient'|'chilled'|'frozen';
+  tempZone?: TempZone;
   lotNo?: string;
   note?: string;
 };
@@ -63,57 +67,11 @@ export type MasterVendor = {
   name: string;   // ★ これを追加
 };
 
-type ShipmentStatus = "open" | "confirmed" | "canceled";
-type TempZone = "ambient" | "chilled" | "frozen";
-
-function isShipmentStatus(v: unknown): v is ShipmentStatus {
-  return v === "open" || v === "confirmed" || v === "canceled";
-}
-
-function isTempZone(v: unknown): v is TempZone {
-  return v === "ambient" || v === "chilled" || v === "frozen";
-}
-
 function toShipmentStatus(v: unknown): ShipmentStatus {
-  // ここは “不正値は落とす” のが気持ち悪さゼロ
-  if (!isShipmentStatus(v)) throw new Error(`invalid shipment status: ${String(v)}`);
-  return v;
+  const s = String(v ?? "");
+  if ((SHIPMENT_STATUS as readonly string[]).includes(s)) return s as ShipmentStatus;
+  throw new Error(`invalid shipment status: ${s}`);
 }
-
-function toTempZoneOrUndef(v: unknown): TempZone | undefined {
-  if (v == null || v === "") return undefined;
-  if (!isTempZone(v)) throw new Error(`invalid tempZone: ${String(v)}`);
-  return v;
-}
-
-export type GetShipmentResponse = {
-  header?: {
-    id: number | string;
-    orderDate: string;
-    deliveryDate: string;
-    status: string;
-    vendorId: string;
-    vendorName?: string | null;
-    destinationId: string;
-    destinationName?: string | null;
-  };
-  lines?: Array<{
-    id?: number;
-    lineId?: number;
-    headerId?: number | string;
-    itemId?: string;
-    itemName?: string | null;
-    orderedQty?: number;
-    shipQty?: number;
-    unitPrice?: number | null;
-    amount?: number | null;
-    unit?: string | null;
-    spec?: string | null;
-    tempZone?: string | null;
-    lotNo?: string | null;
-    note?: string | null;
-  }>;
-};
 
 export type MasterStore = { id: string; name?: string | null };
 
@@ -221,14 +179,14 @@ export async function searchShipments(params: {
   dateTo?: string;
   vendorId?: string;
   destinationId?: string;
-  headerId?: string;
+  shipmentId?: string;
 }) {
   const headers = await getJson<ApiShipmentHeader[]>("/shipments", {
     from: params.dateFrom,
     to: params.dateTo,
     vendorId: params.vendorId,
     destinationId: params.destinationId,
-    headerId: params.headerId,
+    shipmentId: params.shipmentId,
   });
 
   const lines: VendorOrderLine[] = [];
@@ -238,7 +196,7 @@ export async function searchShipments(params: {
       ...ls.map(
         (x): VendorOrderLine => ({
           lineId: String(x.id),
-          headerId: String(h.id),
+          shipmentId: String(h.id),
           itemId: x.itemId,
           itemName: x.itemName ?? "",
           orderedQty: Number(x.orderedQty ?? 0),
@@ -309,7 +267,7 @@ export async function getShipment(id: string) {
 
     return {
       lineId: String((x["lineId"] ?? x["id"]) as unknown),
-      headerId: String((x["headerId"] ?? id) as unknown),
+      shipmentId: String((x["shipmentId"] ?? id) as unknown),
       itemId: String(x["itemId"] ?? ""),
       itemName: String(x["itemName"] ?? ""),
       orderedQty: Number(x["orderedQty"] ?? 0),
@@ -374,12 +332,12 @@ type RawItem = {
 };
 
 
-export async function deleteLine(headerId: string, itemId: string): Promise<void> {
-  await fetch(url(`/shipments/${headerId}/lines/${itemId}`), { method: 'DELETE' });
+export async function deleteLine(shipmentId: string, itemId: string): Promise<void> {
+  await fetch(url(`/shipments/${shipmentId}/lines/${itemId}`), { method: 'DELETE' });
 }
 
-export async function replaceLines(headerId: string, rows: VendorOrderLine[]): Promise<void> {
-  await postJson(`/shipments/${encodeURIComponent(headerId)}/lines/replace`, {
+export async function replaceLines(shipmentId: string, rows: VendorOrderLine[]): Promise<void> {
+  await postJson(`/shipments/${encodeURIComponent(shipmentId)}/lines/replace`, {
     lines: rows.map(l => ({
       itemId: toItemId(l.itemId),
       orderedQty: Number(l.orderedQty ?? 0),

@@ -375,6 +375,31 @@ CREATE INDEX IF NOT EXISTS idx_store_stock_movements_ref
   ON store_stock_movements (ref_type, ref_id);
 
 
+-- === audit_logs (監査ログ) ===
+CREATE TABLE IF NOT EXISTS audit_logs (
+  id               TEXT PRIMARY KEY,
+  at               TEXT NOT NULL,
+  actor            TEXT NOT NULL,
+  type             TEXT NOT NULL,
+
+  shipment_id      TEXT,
+  owner_id         TEXT,
+  vendor_id        TEXT,
+  destination_id   TEXT,
+  destination_name TEXT,
+  delivery_date    TEXT,
+  memo             TEXT,
+  inspection_id    TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_audit_logs_at              ON audit_logs(at);
+CREATE INDEX IF NOT EXISTS idx_audit_logs_shipment_id     ON audit_logs(shipment_id);
+CREATE INDEX IF NOT EXISTS idx_audit_logs_inspection_id   ON audit_logs(inspection_id);
+CREATE INDEX IF NOT EXISTS idx_audit_logs_vendor_id       ON audit_logs(vendor_id);
+CREATE INDEX IF NOT EXISTS idx_audit_logs_destination_id  ON audit_logs(destination_id);
+
+
+
 -- インデックス・トリガー類
 -- CREATE UNIQUE INDEX IF NOT EXISTS ux_shipment_lines_header_item
 --   ON shipment_lines(shipment_id, item_id);

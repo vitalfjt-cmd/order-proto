@@ -15,7 +15,8 @@ export interface AuditEvent {
   actor: string;               // 実行ユーザーID（暫定）
   type: AuditEventType;
   // 関連キー（任意で null 可）
-  headerId?: string | null;    // 伝票番号（VOH-...）
+  shipmentId?: string | null; 
+  inspectionId?: string | null; 
   ownerId?: string | null;     // 所有主体（S001/DC01/VND01等）
   vendorId?: string | null;
   destinationId?: string | null;
@@ -66,7 +67,8 @@ export function logEvent(
     at: now,
     actor: p.actor ?? currentActor(),
     type: p.type,
-    headerId: p.headerId ?? null,
+    shipmentId: p.shipmentId ?? null,
+    inspectionId: p.inspectionId ?? null,
     ownerId: p.ownerId ?? null,
     vendorId: p.vendorId ?? null,
     destinationId: p.destinationId ?? null,
@@ -92,7 +94,8 @@ export type SearchAuditOptions = {
   dateTo?: string;       // YYYY-MM-DD
   actor?: string;
   type?: AuditEventType;
-  headerId?: string;
+  shipmentId?: string;
+  inspectionId?: string;
   vendorId?: string;
   destinationId?: string;
 };
@@ -106,7 +109,8 @@ export async function searchAudit(
   if (opts.dateTo) qs.set("dateTo", opts.dateTo);
   if (opts.actor) qs.set("actor", opts.actor);
   if (opts.type) qs.set("type", opts.type);
-  if (opts.headerId) qs.set("headerId", opts.headerId);
+  if (opts.shipmentId) qs.set("shipmentId", opts.shipmentId);
+  if (opts.inspectionId) qs.set('inspectionId', opts.inspectionId);
   if (opts.vendorId) qs.set("vendorId", opts.vendorId);
   if (opts.destinationId) qs.set("destinationId", opts.destinationId);
 

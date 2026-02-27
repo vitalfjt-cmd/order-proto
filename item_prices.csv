@@ -1,0 +1,10 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Error</title>
+</head>
+<body>
+<pre>SqliteError: no such column: p.updated_at<br> &nbsp; &nbsp;at Database.prepare (C:\Users\uchida\js\workspace\order-proto\backend\node_modules\better-sqlite3\lib\methods\wrappers.js:5:21)<br> &nbsp; &nbsp;at C:\Users\uchida\js\workspace\order-proto\backend\src\api\master.ts:872:6<br> &nbsp; &nbsp;at Layer.handleRequest (C:\Users\uchida\js\workspace\order-proto\backend\node_modules\router\lib\layer.js:152:17)<br> &nbsp; &nbsp;at next (C:\Users\uchida\js\workspace\order-proto\backend\node_modules\router\lib\route.js:157:13)<br> &nbsp; &nbsp;at Route.dispatch (C:\Users\uchida\js\workspace\order-proto\backend\node_modules\router\lib\route.js:117:3)<br> &nbsp; &nbsp;at handle (C:\Users\uchida\js\workspace\order-proto\backend\node_modules\router\index.js:435:11)<br> &nbsp; &nbsp;at Layer.handleRequest (C:\Users\uchida\js\workspace\order-proto\backend\node_modules\router\lib\layer.js:152:17)<br> &nbsp; &nbsp;at C:\Users\uchida\js\workspace\order-proto\backend\node_modules\router\index.js:295:15<br> &nbsp; &nbsp;at processParams (C:\Users\uchida\js\workspace\order-proto\backend\node_modules\router\index.js:582:12)<br> &nbsp; &nbsp;at next (C:\Users\uchida\js\workspace\order-proto\backend\node_modules\router\index.js:291:5)</pre>
+</body>
+</html>

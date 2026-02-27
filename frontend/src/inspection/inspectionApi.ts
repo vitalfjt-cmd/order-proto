@@ -2,16 +2,17 @@
 // 検品API（サーバー連携版）
 
 import type { VendorOrderHeader, VendorOrderLine } from "../vendor/apiVendor";
+import type { InspectionStatus } from "../domain/codes";
 
 // ===== 型定義 =====
 
 export type OwnerType = "STORE" | "DC";
 
-export type InspectionStatus = "open" | "completed" | "audited";
+// export type InspectionStatus = "open" | "completed" | "audited";
 
 export interface InspectionHeader {
   id: number;
-  shipmentId: number;
+  inspectionId: number;
   ownerId: string;
   status: InspectionStatus;
   createdAt: string;
@@ -57,25 +58,6 @@ export interface SearchInspectionsParams {
   ownerId: string;
 }
 
-/**
- * 検品一覧検索API（暫定実装）
- *
- * 現状のサーバー側は ownerId 単位の一覧のみなので、
- * from / to / vendorId は無視して ownerId だけで検索します。
- * フィルタが必要になったらサーバー側の /inspections を拡張します。
- */
-// export async function searchInspections(
-//   params: SearchInspectionsParams
-// ): Promise<{ headers: InspectionHeader[]; lines: InspectionLine[] }> {
-//   // いったん ownerId だけ渡して既存APIを呼ぶ
-//   // return fetchInspectionsByOwner({ ownerId: params.ownerId });
-//     return fetchInspectionsByOwner({
-//     ownerId: params.ownerId,
-//     from: params.from,
-//     to: params.to,
-//     vendorId: params.vendorId,
-//   });
-// }
 export async function searchInspections(
   params: SearchInspectionsParams
 ): Promise<{ headers: InspectionHeader[]; lines: InspectionLine[] }> {
@@ -130,52 +112,9 @@ async function fetchInspections(params: {
   };
 }
 
-// ===== 検品一覧取得（店舗側・将来の検品画面用） =====
-// export async function fetchInspectionsByOwner(params: {
-//   ownerId: string;           // 店舗ID（"0001" など）
-//   from?: string;
-//   to?: string;
-//   vendorId?: string;
-// }): Promise<{ headers: InspectionHeader[]; lines: InspectionLine[] }> {
-//    const usp = new URLSearchParams();
-//   // if (params.ownerId) usp.set("ownerId", params.ownerId);
-//   if (params.ownerId) usp.set("ownerId", params.ownerId);
-//   if (params.from) usp.set("from", params.from);
-//   if (params.to) usp.set("to", params.to);
-//   if (params.vendorId) usp.set("vendorId", params.vendorId);
-
-//   const data = await getJson<{
-//     ok?: boolean;
-//     headers?: InspectionHeader[];
-//     lines?: InspectionLine[];
-//   }>(`/inspections?${usp.toString()}`);
-
-//   return {
-//     headers: data.headers ?? [],
-//     lines: data.lines ?? [],
-//   };
-// }
-export async function fetchInspectionsByOwner(params: {
-  ownerId: string;           // 店舗ID（"0001" など）
-  from?: string;
-  to?: string;
-  vendorId?: string;
-}): Promise<{ headers: InspectionHeader[]; lines: InspectionLine[] }> {
-  return fetchInspections({
-    ownerType: "STORE",
-    ownerId: params.ownerId,
-    from: params.from,
-    to: params.to,
-    vendorId: params.vendorId,
-  });
-}
-
-
 // ===== 出荷→検品の自動生成（ベンダー確定時） =====
 
 /**
- * VendorShipments.handleConfirm から呼ばれる。
- *
  * 役割:
  * - 確定された出荷ヘッダを店舗ごとにまとめる
  * - 店舗ごとに /inspections/generate-from-shipments を呼び出して

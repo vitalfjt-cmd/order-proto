@@ -1,0 +1,120 @@
+{
+  "App.tsx": [
+    "HistoryPage.tsx",
+    "audit/AuditView.tsx",
+    "db.ts",
+    "inspection/InspectionEdit.tsx",
+    "inspection/InspectionList.tsx",
+    "ordering/orderingApi.ts",
+    "ordering/types.ts",
+    "store/StoreMonthlySummary.tsx",
+    "store/StoreShipmentEdit.tsx",
+    "store/StoreShipmentList.tsx",
+    "store/StoreStockList.tsx",
+    "utils/csv.ts",
+    "utils/date.ts",
+    "vendor/VendorEdit.tsx",
+    "vendor/VendorInspectionList.tsx",
+    "vendor/VendorShipments.tsx"
+  ],
+  "HistoryPage.tsx": [
+    "ordering/orderingApi.ts",
+    "ordering/types.ts",
+    "utils/date.ts"
+  ],
+  "audit/AuditView.tsx": [
+    "audit/auditCsv.ts",
+    "auditlog.ts",
+    "vendor/apiVendor.ts"
+  ],
+  "audit/auditCsv.ts": [
+    "auditlog.ts",
+    "utils/csv.ts"
+  ],
+  "auditlog.ts": [],
+  "components/VendorModal.tsx": [
+    "vendor/apiVendor.ts"
+  ],
+  "db.ts": [],
+  "index.css": [],
+  "inspection/InspectionEdit.tsx": [
+    "auditlog.ts",
+    "inspection/inspectionApi.ts"
+  ],
+  "inspection/InspectionList.tsx": [
+    "auditlog.ts",
+    "components/VendorModal.tsx",
+    "inspection/discrepancyCsv.ts",
+    "inspection/inspectionApi.ts",
+    "utils/csv.ts",
+    "utils/date.ts"
+  ],
+  "inspection/discrepancyCsv.ts": [
+    "inspection/inspectionApi.ts",
+    "utils/csv.ts"
+  ],
+  "inspection/inspectionApi.ts": [
+    "vendor/apiVendor.ts"
+  ],
+  "main.tsx": [
+    "App.tsx",
+    "index.css"
+  ],
+  "ordering/orderingApi.ts": [
+    "ordering/types.ts"
+  ],
+  "ordering/types.ts": [],
+  "reports/csv/pickingCsv.ts": [
+    "utils/csv.ts",
+    "vendor/apiVendor.ts"
+  ],
+  "reports/print/deliveryNote.ts": [
+    "vendor/apiVendor.ts"
+  ],
+  "reports/print/invoicePrint.tsx": [
+    "vendor/apiVendor.ts"
+  ],
+  "reports/print/pickingPrint.tsx": [
+    "vendor/apiVendor.ts"
+  ],
+  "store/StoreMonthlySummary.tsx": [
+    "store/storeStocksApi.ts",
+    "utils/csv.ts"
+  ],
+  "store/StoreShipmentEdit.tsx": [
+    "store/storeShipmentsApi.ts",
+    "utils/csv.ts",
+    "utils/date.ts"
+  ],
+  "store/StoreShipmentList.tsx": [
+    "store/storeShipmentsApi.ts",
+    "utils/date.ts"
+  ],
+  "store/StoreStockList.tsx": [
+    "utils/csv.ts",
+    "utils/date.ts"
+  ],
+  "store/storeShipmentsApi.ts": [],
+  "store/storeStocksApi.ts": [],
+  "utils/csv.ts": [],
+  "utils/date.ts": [],
+  "vendor/VendorEdit.tsx": [
+    "utils/date.ts",
+    "vendor/apiVendor.ts"
+  ],
+  "vendor/VendorInspectionList.tsx": [
+    "inspection/InspectionList.tsx"
+  ],
+  "vendor/VendorShipments.tsx": [
+    "auditlog.ts",
+    "inspection/inspectionApi.ts",
+    "reports/csv/pickingCsv.ts",
+    "reports/print/deliveryNote.ts",
+    "reports/print/invoicePrint.tsx",
+    "reports/print/pickingPrint.tsx",
+    "utils/csv.ts",
+    "utils/date.ts",
+    "vendor/apiVendor.ts"
+  ],
+  "vendor/apiVendor.ts": []
+}

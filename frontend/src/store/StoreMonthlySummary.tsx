@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { toCsvString, downloadCsv } from "../utils/csv";
 import {
   getValuationSettings,
@@ -100,17 +100,7 @@ export function StoreMonthlySummary(props: { defaultStoreId?: string }) {
         valuationMethod?: ValuationMethod;
         rows?: MonthlySummaryRowBase[];
       };
-      // 確認用 ここから
-       console.log("[monthly-summary raw]", {
-        ok: json.ok,
-        storeId: json.storeId,
-        month: json.month,
-        valuationMethod: json.valuationMethod,
-        firstRow: json.rows?.[0],
-        row001001: json.rows?.find((x) => x.itemId === "001001"),
-        row001018: json.rows?.find((x) => x.itemId === "001018"),
-      });
-      // ここまで
+
       if (!r.ok || json.ok === false) {
         setError(json.error || "月次サマリの取得に失敗しました。");
         setRows([]);
@@ -122,13 +112,6 @@ export function StoreMonthlySummary(props: { defaultStoreId?: string }) {
         ...x,
         actualQty: x.closingQty, // 初期値：理論と同じ（原価=0スタート）
       }));
-      // 確認用 ここから
-        console.log("[monthly-summary extended]", {
-        firstRow: extended[0],
-        row001001: extended.find((x) => x.itemId === "001001"),
-        row001018: extended.find((x) => x.itemId === "001018"),
-      });
-      // ここまで
 
       setRows(extended);
       if (json.storeId) setStoreIdInput(json.storeId);
@@ -312,13 +295,6 @@ export function StoreMonthlySummary(props: { defaultStoreId?: string }) {
       setSaving(false);
     }
   }
-
-  console.log("[render rows]", {
-  len: rows.length,
-  row001001: rows.find((x) => x.itemId === "001001"),
-  row001018: rows.find((x) => x.itemId === "001018"),
-});
-
 
   return (
     <div className="space-y-3">

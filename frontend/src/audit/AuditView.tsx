@@ -1,6 +1,6 @@
 // frontend/src/audit/AuditView.tsx
 
-import React, { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   searchAudit,
   type AuditEvent,
@@ -13,28 +13,8 @@ import {
   type MasterStore,
   type MasterVendor,
 } from "../vendor/apiVendor";
+import { AUDIT_EVENT_TYPES, AUDIT_EVENT_TYPE_LABEL } from "./auditCodes";
 
-// 種別リスト
-const TYPES: AuditEventType[] = [
-  "shipment.confirm",
-  "shipment.unconfirm",
-  "shipment.save",
-  "inspection.confirm",
-  "inspection.unconfirm",
-  "inspection.save",
-  "inspection.audit",
-];
-
-// 表示用ラベル（auditCsv.ts と揃える）
-const TYPE_LABEL: Record<AuditEventType, string> = {
-  "shipment.confirm": "出荷確定",
-  "shipment.unconfirm": "出荷確定取消",
-  "shipment.save": "出荷保存",
-  "inspection.confirm": "検収確定",
-  "inspection.unconfirm": "検収取消",
-  "inspection.save": "検品保存",
-  "inspection.audit": "検品監査",
-};
 
 // 日付範囲バリデーション（YYYY-MM-DD 前提）
 function validateDateRange(from: string, to: string): string | null {
@@ -50,7 +30,8 @@ export default function AuditView() {
   const [dateTo, setDateTo] = useState<string>("");
 
   const [type, setType] = useState<AuditEventType | "">("");
-  const [headerId, setHeaderId] = useState("");
+  const [shipmentId, setShipmentId] = useState('');
+  const [inspectionId, setInspectionId] = useState('');
   const [vendorId, setVendorId] = useState("");
   const [vendorName, setVendorName] = useState("");
   const [destinationId, setDestinationId] = useState("");
@@ -132,7 +113,8 @@ export default function AuditView() {
         dateFrom: dateFrom || undefined,
         dateTo: dateTo || undefined,
         type: (type || undefined) as AuditEventType | undefined,
-        headerId: headerId.trim() || undefined,
+        shipmentId: shipmentId.trim() || undefined,
+        inspectionId: inspectionId || undefined,
         vendorId: vendorId.trim() || undefined,
         destinationId: destinationId.trim() || undefined,
       });
@@ -156,7 +138,8 @@ export default function AuditView() {
     setDateFrom("");
     setDateTo("");
     setType("");
-    setHeaderId("");
+    setShipmentId("");
+    setInspectionId('');
     setVendorId("");
     setVendorName("");
     setDestinationId("");
@@ -215,9 +198,9 @@ export default function AuditView() {
             className="border rounded px-2 py-1 block"
           >
             <option value="">(すべて)</option>
-            {TYPES.map((t) => (
+            {AUDIT_EVENT_TYPES.map((t) => (
               <option key={t} value={t}>
-                {TYPE_LABEL[t]}
+                {AUDIT_EVENT_TYPE_LABEL[t]}
               </option>
             ))}
           </select>
@@ -226,12 +209,15 @@ export default function AuditView() {
         <label className="text-sm">
           伝票番号
           <input
-            value={headerId}
-            onChange={(e) => setHeaderId(e.target.value)}
+            value={shipmentId}
+            onChange={(e) => setShipmentId(e.target.value)}
             className="border rounded px-2 py-1 w-44 block"
             placeholder="検品ID / 出荷ID など"
           />
         </label>
+
+        <label className="text-xs">検品ID</label>
+        <input className="border rounded px-2 py-1" value={inspectionId} onChange={(e)=>setInspectionId(e.target.value)} />
 
         {/* ベンダー条件 */}
         <div className="text-sm">
@@ -389,8 +375,8 @@ export default function AuditView() {
             >
               <td>{r.at.replace("T", " ").replace("Z", "")}</td>
               <td>{r.actor}</td>
-              <td>{TYPE_LABEL[r.type] ?? r.type}</td>
-              <td className="font-mono">{r.headerId}</td>
+              <td>{AUDIT_EVENT_TYPE_LABEL[r.type] ?? r.type}</td>
+              <td className="font-mono">{r.shipmentId}</td>
               <td>
                 {r.destinationId} {r.destinationName ?? ""}
               </td>
@@ -454,7 +440,7 @@ export default function AuditView() {
                     種別
                   </th>
                   <td className="py-1">
-                    {TYPE_LABEL[selected.type] ??
+                    {AUDIT_EVENT_TYPE_LABEL[selected.type] ??
                       selected.type}
                   </td>
                 </tr>
@@ -463,7 +449,7 @@ export default function AuditView() {
                     伝票番号
                   </th>
                   <td className="py-1 font-mono">
-                    {selected.headerId}
+                    {selected.shipmentId}
                   </td>
                 </tr>
                 <tr>

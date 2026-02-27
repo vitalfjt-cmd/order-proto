@@ -738,10 +738,6 @@ ordering.post('/submit', (req, res) => {
 
     tx();
 
-    console.log(
-      `[DB] order ${existing ? 'updated' : 'inserted'}: ${targetOrderId} (${normalizedLines.length} lines)`
-    );
-
     return res.status(existing ? 200 : 201).json({
       status: existing ? 'updated' : 'accepted',
       orderId: targetOrderId,

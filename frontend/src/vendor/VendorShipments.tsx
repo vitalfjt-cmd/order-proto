@@ -6,12 +6,10 @@ import { logEvent } from "../auditlog";
 import type { MasterVendor } from "./apiVendor";
 import { searchShipments, seedDemoIfEmpty, confirmShipments, unconfirmShipments, listVendors, generateShipments } from "./apiVendor";
 import { ymd, formatYMD } from "../utils/date"
-import {
-   buildPickingCsv,
-   openDeliveryNotePrint,
-   openInvoicePrint,
-   openPickingPrintWithStores,
- } from "../reports";
+import { buildPickingCsv } from "../reports/csv/pickingCsv";
+import { openDeliveryNotePrint } from "../reports/print/deliveryNote";
+import { openInvoicePrint } from "../reports/print/invoicePrint";
+import { openPickingPrintWithStores } from "../reports/print/pickingPrint";
 
 // ID 正規化（ゼロ埋め固定長）
 const ID = {
@@ -63,14 +61,14 @@ async function doSearch() {
   const dt = dateTo || "";
   const vid = vendorId ? ID.vendor(vendorId) : "";
   const did = destinationId ? ID.store(destinationId) : "";
-  const hid = (searchHeaderId || "").trim();
+  const sid = (searchHeaderId || "").trim();
 
   // ★検索条件を保存（戻り遷移で使う）
   sessionStorage.setItem("shipments.dateFrom", df);
   sessionStorage.setItem("shipments.dateTo", dt);
   sessionStorage.setItem("shipments.vendorId", vid);
   sessionStorage.setItem("shipments.destinationId", did);
-  sessionStorage.setItem("shipments.headerId", hid);
+  sessionStorage.setItem("shipments.shipmentId", sid);
   sessionStorage.setItem("shipments.lastSearch", "1");
 
   // ★URL も同条件にしておく（リロード/戻りで復元できる）
@@ -79,7 +77,7 @@ async function doSearch() {
   if (dt) q.set("dateTo", dt);
   if (vid) q.set("vendorId", vid);
   if (did) q.set("destinationId", did);
-  if (hid) q.set("headerId", hid);
+  if (sid) q.set("shipmentId", sid);
 
   const base = location.hash.split("?")[0] || "#/vendor/shipments";
   const qs = q.toString();
@@ -90,7 +88,7 @@ async function doSearch() {
     dateTo: dt,
     vendorId: vid || undefined,
     destinationId: did || undefined,
-    headerId: hid || undefined,
+    shipmentId: sid || undefined,
   });
 }
 
@@ -99,7 +97,7 @@ useEffect(() => {
   (async () => { setVendors(await listVendors()); })();
 }, [vendorModalOpen, vendors.length]);
 
-async function doSearchWith(params: { dateFrom?: string; dateTo?: string; vendorId?: string; destinationId?: string; headerId?: string; }) {
+async function doSearchWith(params: { dateFrom?: string; dateTo?: string; vendorId?: string; destinationId?: string; shipmentId?: string; }) {
    const res = await searchShipments({
       ...params,
       vendorId: params.vendorId ? ID.vendor(params.vendorId) : undefined,
@@ -163,10 +161,6 @@ async function doSearchWith(params: { dateFrom?: string; dateTo?: string; vendor
     );
     const ids = targets.map((h) => h.id);
 
-    // --- ログ: 選択状況 ---
-    console.log("[VendorShipments.handleConfirm] selected(open only) headers:", targets);
-    console.log("[VendorShipments.handleConfirm] ids to confirm:", ids);
-
     if (ids.length === 0) {
       alert("確定対象（open）が選択されていません。");
       return;
@@ -174,15 +168,12 @@ async function doSearchWith(params: { dateFrom?: string; dateTo?: string; vendor
     if (!confirm(`${ids.length}件の伝票を確定します。よろしいですか？`)) return;
 
     try {
-      console.log("[VendorShipments.handleConfirm] call confirmShipments(ids)...");
       await confirmShipments(ids);
-      console.log("[VendorShipments.handleConfirm] confirmShipments done.", { ids });
-
       // ★ 1件ずつ記録
       for (const h of targets) {
         logEvent({
           type: "shipment.confirm",
-          headerId: h.id,
+          shipmentId: h.id,
           vendorId: h.vendorId,
           destinationId: h.destinationId,
           destinationName: h.destinationName,
@@ -191,27 +182,11 @@ async function doSearchWith(params: { dateFrom?: string; dateTo?: string; vendor
         });
       }
 
-      // --- ログ: ensureFromShipments に渡す情報を確認 ---
-      console.log("[VendorShipments.handleConfirm] ensureFromShipments args summary:", {
-        ids,
-        headerCount: headers.length,
-        lineCount: lines.length,
-        targetCount: targets.length,
-        // destinationId と id の対応を確認したいので簡易サマリを出す
-        headerDestinations: headers.map((h) => ({
-          id: h.id,
-          destinationId: h.destinationId,
-        })),
-      });
-
       // 検品データの自動生成（出荷 → inspections）
-      console.log("[VendorShipments.handleConfirm] call ensureFromShipments(headers, lines, ids)...");
       await ensureFromShipments(headers, lines, ids);
-      console.log("[VendorShipments.handleConfirm] ensureFromShipments finished.");
 
       // 再検索
       await doSearch();
-      console.log("[VendorShipments.handleConfirm] doSearch() finished. all done.");
     } catch (e) {
       console.error("[VendorShipments.handleConfirm] error during confirm/ensure:", e);
       alert(
@@ -220,7 +195,6 @@ async function doSearchWith(params: { dateFrom?: string; dateTo?: string; vendor
       );
     }
   }
-
 
   async function handleUnconfirm(): Promise<void> {
     const targets = headers.filter(h => selected[h.id] && h.status === "confirmed");
@@ -233,7 +207,7 @@ async function doSearchWith(params: { dateFrom?: string; dateTo?: string; vendor
     for (const h of targets) {
       logEvent({
         type: "shipment.unconfirm",
-        headerId: h.id,
+        shipmentId: h.id,
         vendorId: h.vendorId,
         destinationId: h.destinationId,
         destinationName: h.destinationName,
@@ -256,7 +230,7 @@ async function doSearchWith(params: { dateFrom?: string; dateTo?: string; vendor
     let dt = q.get("dateTo")   || q.get("deliveryDate") || sessionStorage.getItem("shipments.dateTo")   || "";
     const vidRaw = q.get("vendorId") || sessionStorage.getItem("shipments.vendorId") || vendorId || "";
     const didRaw = q.get("destinationId") || sessionStorage.getItem("shipments.destinationId") || destinationId || "";
-    const hid = q.get("headerId") || sessionStorage.getItem("shipments.headerId") || "";
+    const sid = q.get("shipmentId") || sessionStorage.getItem("shipments.shipmentId") || "";
 
     if (!df && !dt) {
       const today = formatYMD(new Date());
@@ -273,14 +247,14 @@ async function doSearchWith(params: { dateFrom?: string; dateTo?: string; vendor
     if (dt   !== dateTo)         setDateTo(dt);
     if (vid6 !== vendorId)       setVendorId(vid6);
     if (did4 !== destinationId)  setDestinationId(did4);
-    if (hid  !== searchHeaderId) setSearchHeaderId(hid);
+    if (sid  !== searchHeaderId) setSearchHeaderId(sid);
 
     if (!hasQuery) {
       setHeaders([]); setLines([]); setSelected({}); setHighlightId(null);
       return;
     }
 
-    await doSearchWith({ dateFrom: df, dateTo: dt, vendorId: vid6, destinationId: did4, headerId: hid });
+    await doSearchWith({ dateFrom: df, dateTo: dt, vendorId: vid6, destinationId: did4, shipmentId: sid });
   }
 
   return (
@@ -500,7 +474,7 @@ async function doSearchWith(params: { dateFrom?: string; dateTo?: string; vendor
             if (ids.length === 0) { alert("対象の伝票を選択してください。"); return; }
             const groups = headers
               .filter(h => ids.includes(h.id))
-              .map(h => ({ header: h, lines: lines.filter(l => l.headerId === h.id) }));
+              .map(h => ({ header: h, lines: lines.filter(l => String(l.shipmentId) === String(h.id)) }));
             openPickingPrintWithStores(groups);
           }}
         >
@@ -516,7 +490,7 @@ async function doSearchWith(params: { dateFrom?: string; dateTo?: string; vendor
               .filter(h => ids.includes(h.id))
               .map(h => ({
                 header: h,
-                lines: lines.filter(l => l.headerId === h.id)
+                lines: lines.filter(l => String(l.shipmentId) === String(h.id))
               }));
             openInvoicePrint(groups);
           }}
@@ -622,7 +596,7 @@ async function doSearchWith(params: { dateFrom?: string; dateTo?: string; vendor
                       className="border rounded px-2 py-1"
                       onClick={() => {
                         const hdr = headers.find(x => x.id === h.id)!;
-                        const ls = lines.filter(x => x.headerId === h.id);
+                        const ls = lines.filter(x => String(x.shipmentId) === String(h.id));
                         openDeliveryNotePrint(hdr, ls);
                       }}
                     >

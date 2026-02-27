@@ -147,12 +147,17 @@ inspections.get('/inspections', (req, res) => {
           i.status,
           i.created_at       AS createdAt,
           i.updated_at       AS updatedAt,
+
           s.vendor_id        AS vendorId,
           s.destination_id   AS destinationId,
-          s.destination_name AS destinationName,
+
+          -- ★ JOIN 正：stores.name を優先（shipments.destination_name は古いデータで空があり得る）
+          COALESCE(NULLIF(s.destination_name, ''), st.name) AS destinationName,
+
           s.delivery_date    AS deliveryDate
         FROM inspections i
         JOIN shipments s ON s.id = i.shipment_id
+        LEFT JOIN stores st ON st.id = s.destination_id
         ${whereSql}
         ORDER BY s.delivery_date DESC, s.vendor_id, s.destination_id, i.id
         `
@@ -167,7 +172,7 @@ inspections.get('/inspections', (req, res) => {
         updatedAt: r.updatedAt,
         vendorId: r.vendorId,
         destinationId: r.destinationId,
-        destinationName: r.destinationName,
+        destinationName: r.destinationName, // ここはそのまま
         deliveryDate: r.deliveryDate,
       }));
 

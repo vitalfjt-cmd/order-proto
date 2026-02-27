@@ -1,6 +1,7 @@
 // src/reports/print/invoicePrint.tsx
-import React from "react";
-import type { VendorOrderHeader, VendorOrderLine, TempZone } from "../../vendor/apiVendor";
+import type { VendorOrderHeader, VendorOrderLine } from "../../vendor/apiVendor";
+import { TEMP_ZONES, TEMP_ZONE_LABEL, toTempZoneOrUndef } from "../../domain/codes";
+import type { TempZone } from "../../domain/codes";
 
 /** 会社情報（必要に応じて編集してください） */
 const COMPANY = {
@@ -131,11 +132,12 @@ export function openInvoicePrint(groups: Group[]) {
   win.document.close();
 
   function renderPage(g: Group, pageNo: number, pageCount: number, nowStrLocal: string) {
-    // 並び：温度帯（常温→チルド→冷凍）→ 品目コード
-    const zoneOrder: TempZone[] = ["ambient","chilled","frozen"];
+    // 並び：温度帯（常温→チルド→冷凍）→ 品目コード 
+    const zoneOrder = TEMP_ZONES as readonly TempZone[];
+    const DEFAULT_TEMP_ZONE: TempZone = TEMP_ZONES[0];
     const sorted = [...g.lines].sort((a,b) => {
-      const za = zoneOrder.indexOf(a.tempZone ?? "ambient");
-      const zb = zoneOrder.indexOf(b.tempZone ?? "ambient");
+    const za = zoneOrder.indexOf(toTempZoneOrUndef(a.tempZone) ?? DEFAULT_TEMP_ZONE);
+    const zb = zoneOrder.indexOf(toTempZoneOrUndef(b.tempZone) ?? DEFAULT_TEMP_ZONE);
       if (za !== zb) return za - zb;
       return (a.itemId || "").localeCompare(b.itemId || "");
     });
@@ -147,8 +149,7 @@ export function openInvoicePrint(groups: Group[]) {
     const taxRate = 0.10; // 必要に応じてヘッダ/設定由来に
     const tax = withPrice ? Math.floor(subtotal * taxRate) : 0;
     const total = withPrice ? subtotal + tax : 0;
-
-    const zoneJp: Record<string,string> = { ambient:"常温", chilled:"チルド", frozen:"冷凍" };
+    // const zoneJp = TEMP_ZONE_LABEL; 
 
     return `
     <div class="page">
@@ -223,7 +224,7 @@ export function openInvoicePrint(groups: Group[]) {
                 <td class="num">${nf0(qty)}</td>
                 ${withPrice ? `<td class="num">${nf0(amt)}</td>` : ``}
                 <td class="muted">${esc(x.note || x.lotNo)}</td>
-                <td>${esc(zoneJp[x.tempZone ?? "ambient"])}</td>
+                <td>${esc(TEMP_ZONE_LABEL[toTempZoneOrUndef(x.tempZone) ?? DEFAULT_TEMP_ZONE])}</td>
               </tr>
             `;
           }).join("")}
